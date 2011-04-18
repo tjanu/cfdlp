@@ -649,8 +649,8 @@ void compute_fdlp_feats( short *x, int N, int Fs, int nbands, int nceps, float *
 	    }      
 
 	    adapt_m(env_pad2,Npad2,Fs,env_adpt);
-	    for ( int n = 0; n < Npad2; n++ ) {
-	    } 
+	    //for ( int n = 0; n < Npad2; n++ ) {
+	    //} 
 
 	    for ( int n = 0; n < Npad1; n++ ) {
 		if ( n < mirr_len )
@@ -689,6 +689,11 @@ void compute_fdlp_feats( short *x, int N, int Fs, int nbands, int nceps, float *
 int main(int argc, char **argv)
 { 
     parse_args(argc, argv);
+
+    if (axis == AXIS_LINEAR && !do_spec) {
+	fprintf(stderr, "Linear frequency axis is only available for short-term (spectral) features.\n");
+	usage();
+    }
 
     LOOKUP_TABLE = (float*) MALLOC(((int) pow(2,nbits_log))*sizeof(float));
     fill_icsi_log_table(nbits_log,LOOKUP_TABLE); 
