@@ -14,7 +14,8 @@ void adapt_m(float * in, int N, float fsample, float * out);
 
 #define AXIS_BARK 0
 #define AXIS_MEL 1
-#define AXIS_LINEAR 2
+#define AXIS_LINEAR_MEL 2
+#define AXIS_LINEAR_BARK 3
 
 char *infile = NULL;
 char *outfile = NULL;
@@ -34,35 +35,70 @@ void usage()
 
 void parse_args(int argc, char **argv)
 {
-    for( int i = 1; i < argc; i++ ) {
-	if ( strcmp(argv[i], "-i") == 0 ) infile = argv[++i];
-	else if ( strcmp(argv[i], "-o") == 0 ) outfile = argv[++i];
-	else if ( strcmp(argv[i], "-print") == 0 ) printfile = argv[++i];
-	else if ( strcmp(argv[i], "-sr") == 0 ) Fs = atoi(argv[++i]);
-	else if ( strcmp(argv[i], "-gn") == 0 ) do_gain_norm = atoi(argv[++i]);
-	else if ( strcmp(argv[i], "-spec") == 0 ) do_spec = atoi(argv[++i]);	
+    for ( int i = 1; i < argc; i++ )
+    {
+	if ( strcmp(argv[i], "-i") == 0 )
+	{
+	    infile = argv[++i];
+	}
+	else if ( strcmp(argv[i], "-o") == 0 )
+	{
+	    outfile = argv[++i];
+	}
+	else if ( strcmp(argv[i], "-print") == 0 )
+	{
+	    printfile = argv[++i];
+	}
+	else if ( strcmp(argv[i], "-sr") == 0 )
+	{
+	    Fs = atoi(argv[++i]);
+	}
+	else if ( strcmp(argv[i], "-gn") == 0 )
+	{
+	    do_gain_norm = atoi(argv[++i]);
+	}
+	else if ( strcmp(argv[i], "-spec") == 0 )
+	{
+	    do_spec = atoi(argv[++i]);
+	}
 	else if ( strcmp(argv[i], "-axis") == 0 )
 	{
 	    i++;
 	    if(strcmp(argv[i], "bark") == 0)
+	    {
 		axis = AXIS_BARK;
+	    }
 	    else if (strcmp(argv[i], "mel") == 0)
+	    {
 		axis = AXIS_MEL;
-	    else if (strcmp(argv[i], "linear") == 0)
-		axis = AXIS_LINEAR;
-	    else {
+	    }
+	    else if (strcmp(argv[i], "linear-mel") == 0)
+	    {
+		axis = AXIS_LINEAR_MEL;
+	    }
+	    else if (strcmp(argv[i], "linear-bark") == 0)
+	    {
+		axis = AXIS_LINEAR_BARK;
+	    }
+	    else
+	    {
 		fprintf(stderr, "unknown frequency axis scale: %s\n", argv[i]);
 		usage();
 	    }
 	}
-	else if ( strcmp(argv[i], "-specgram") == 0 ) {specgrm = atoi(argv[++i]); if (specgrm) do_spec = 1;}
-	else {
+	else if ( strcmp(argv[i], "-specgram") == 0 )
+	{
+	    specgrm = atoi(argv[++i]); if (specgrm) do_spec = 1;
+	}
+	else
+	{
 	    fprintf(stderr, "unknown arg: %s\n", argv[i]);
 	    usage();
 	}
     }
 
-    if ( !infile || !outfile || !printfile ) {
+    if ( !infile || !outfile || !printfile )
+    {
 	usage();
 	fatal("\nERROR: infile (-i), outfile (-o), and printfile (-print) args is required");
     }
@@ -71,7 +107,8 @@ void parse_args(int argc, char **argv)
 
 void sdither( short *x, int N, int scale ) 
 {
-    for ( int i = 0; i < N; i++ ) {
+    for ( int i = 0; i < N; i++ )
+    {
 	float r = ((float) rand())/RAND_MAX;
 	x[i] += round(scale*(2*r-1));
     }
@@ -79,7 +116,8 @@ void sdither( short *x, int N, int scale )
 
 void fdither( float *x, int N, int scale ) 
 {
-    for ( int i = 0; i < N; i++ ) {
+    for ( int i = 0; i < N; i++ )
+    {
 	float r = ((float) rand())/RAND_MAX;
 	x[i] += round(scale*(2*r-1));
     }
@@ -88,13 +126,15 @@ void fdither( float *x, int N, int scale )
 void sub_mean( short *x, int N ) 
 {
     float sum = 0;
-    for ( int i = 0; i < N; i++ ) {
+    for ( int i = 0; i < N; i++ )
+    {
 	sum += x[i];
     }
 
     short mean = round(sum/N);
 
-    for ( int i = 0; i < N; i++ ) {
+    for ( int i = 0; i < N; i++ )
+    {
 	x[i] -= mean;
     }
 }
@@ -112,8 +152,10 @@ short *sconstruct_frames( short **x, int *N, int width, int overlap, int *nframe
     int step = width-overlap;
     short *frames = MALLOC(*nframes*width*sizeof(short));
 
-    for ( int f = 0; f < *nframes; f++ ) {
-	for ( int n = 0; n < width; n++ ) {
+    for ( int f = 0; f < *nframes; f++ )
+    {
+	for ( int n = 0; n < width; n++ )
+	{
 	    frames[f*width+n] = *(*x + f*step+n);
 	}
     }
@@ -134,22 +176,27 @@ float *fconstruct_frames( float **x, int *N, int width, int overlap, int *nframe
     int step = width-overlap;
     float *frames = MALLOC(*nframes*width*sizeof(float));
 
-    for ( int f = 0; f < *nframes; f++ ) {
-	for ( int n = 0; n < width; n++ ) {
+    for ( int f = 0; f < *nframes; f++ )
+    {
+	for ( int n = 0; n < width; n++ )
+	{
 	    frames[f*width+n] = *(*x + f*step+n);
 	}
     }
 
     return frames;
 }
+
 // Function to implement Hamming Window
 float * hamming(int N)
 {
     int half; 
     float temp;
     float *x = (float *) MALLOC( N*sizeof(float) );  
-    if (N % 2) half = (N+1)/2;
-    else half = N/2;
+    if (N % 2)
+	half = (N+1)/2;
+    else
+	half = N/2;
 
     for (int i =0; i<N; i++)
     {
@@ -165,9 +212,9 @@ float * hamming(int N)
 	}
     }
 
-    return x;	
-
+    return x;
 }
+
 // function for implementing deltas
 float * deltas(float *x, int nframes, int ncep, int w)
 {
@@ -175,18 +222,36 @@ float * deltas(float *x, int nframes, int ncep, int w)
     float *d = (float *) MALLOC(ncep*nframes*sizeof(float)); 
     float *xpad = (float *) MALLOC(ncep*(nframes+w-1)*sizeof(float));
     int hlen = floor(w/2);
-    for (int fr = 0;fr<(nframes+w-1);fr++){
-	for(int cep =0;cep<ncep;cep++){
-	    if (fr < hlen) xpad[fr*ncep+cep] = x[cep];
-	    else if (fr >= (nframes+w-1)-hlen) xpad[fr*ncep+cep] = x[(nframes-1)*ncep + cep];
-	    else xpad[fr*ncep+cep] = x[(fr-hlen)*ncep+cep];	
-	}}
-    for (int fr = w-1;fr<(nframes+w-1);fr++){
-	for(int cep =0;cep<ncep;cep++){
+    for (int fr = 0;fr<(nframes+w-1);fr++)
+    {
+	for(int cep =0;cep<ncep;cep++)
+	{
+	    if (fr < hlen)
+	    {
+		xpad[fr*ncep+cep] = x[cep];
+	    }
+	    else if (fr >= (nframes+w-1)-hlen)
+	    {
+		xpad[fr*ncep+cep] = x[(nframes-1)*ncep + cep];
+	    }
+	    else
+	    {
+		xpad[fr*ncep+cep] = x[(fr-hlen)*ncep+cep];	
+	    }
+	}
+    }
+    for (int fr = w-1;fr<(nframes+w-1);fr++)
+    {
+	for(int cep =0;cep<ncep;cep++)
+	{
 	    float temp = 0;	
-	    for (int i = 0;i < w;i++) temp += xpad[(fr-i)*ncep+cep]*(hlen-i);	
+	    for (int i = 0;i < w; i++)
+	    {
+		temp += xpad[(fr-i)*ncep+cep]*(hlen-i);	
+	    }
 	    d[(fr-w+1)*ncep+cep] = temp;
-	}}
+	}
+    }
     FREE(xpad);
     return (d);
 
@@ -207,8 +272,15 @@ float hz2mel( float hz )
     float logstep = exp(log(6.4)/27);
 
     // fill in parts separately
-    if (hz < brkfrq)   z = (hz - f_0)/f_sp;
-    else z  = brkpt+((log(hz/brkfrq))/log(logstep));
+    if (hz < brkfrq)
+    {
+	z = (hz - f_0)/f_sp;
+    }
+    else
+    {
+	z  = brkpt+((log(hz/brkfrq))/log(logstep));
+    }
+
     return z; 
 }
 
@@ -221,13 +293,16 @@ void barkweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int *nb
     float *binbarks = (float *) MALLOC(nfreqs*sizeof(float));
 
     // Bark frequency of every bin in FFT
-    for ( int i = 0; i < nfreqs; i++ ) {
+    for ( int i = 0; i < nfreqs; i++ )
+    {
 	binbarks[i] = hz2bark(((float)i*(Fs/2))/(nfreqs-1));
     }
 
-    for ( int i = 0; i < *nbands; i++ ) {
+    for ( int i = 0; i < *nbands; i++ )
+    {
 	float f_bark_mid = i*step_barks;
-	for ( int j = 0; j < nfreqs; j++ ) {
+	for ( int j = 0; j < nfreqs; j++ )
+	{
 	    wts[i*nfreqs+j] = exp(-0.5*pow(binbarks[j]-f_bark_mid,2));
 	}
     }
@@ -235,7 +310,8 @@ void barkweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int *nb
     // compute frequency range where each filter exceeds dB threshold
     float lin = pow(10,-dB/20);
 
-    for ( int i = 0; i < *nbands; i++ ) {
+    for ( int i = 0; i < *nbands; i++ )
+    {
 	int j = 0;
 	while ( wts[i*nfreqs+(j++)] < lin );
 	indices[i*2] = j-1;
@@ -246,26 +322,31 @@ void barkweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int *nb
 
     FREE(binbarks);
 }
+
 void melweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int *nbands)
 {
     float nyqmel = hz2mel(Fs/2);
     float step_mels = nyqmel/(*nbands - 1);
     float *binmels = (float *) MALLOC(nfreqs*sizeof(float));
 
-    for ( int i = 0; i < nfreqs; i++ ) {
+    for ( int i = 0; i < nfreqs; i++ )
+    {
 	binmels[i] = hz2mel(((float)i*(Fs/2))/(nfreqs-1));
     }
 
-    for ( int i = 0; i < *nbands; i++ ) {
+    for ( int i = 0; i < *nbands; i++ )
+    {
 	float f_mel_mid = i*step_mels;
-	for ( int j = 0; j < nfreqs; j++ ) {
+	for ( int j = 0; j < nfreqs; j++ )
+	{
 	    wts[i*nfreqs+j] = exp(-0.5*pow(binmels[j]-f_mel_mid,2));
 	}
     }
 
     float lin = pow(10,-dB/20);
 
-    for ( int i = 0; i < *nbands; i++ ) {
+    for ( int i = 0; i < *nbands; i++ )
+    {
 	int j = 0;
 	while ( wts[i*nfreqs+(j++)] < lin );
 	indices[i*2] = j-1;
@@ -282,20 +363,25 @@ void linweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int *nba
     int whop = (int)roundf(nfreqs / (*nbands + 3.5));
     int wlen = (int)roundf(2.5 * whop);
 
-    for(int i = 0; i < *nbands; i++) {
-	for(int j = 0; j < nfreqs; j++) {
+    for(int i = 0; i < *nbands; i++)
+    {
+	for(int j = 0; j < nfreqs; j++)
+	{
 	    wts[i * nfreqs + j] = 1.;
 	}
 	indices[i*2] = i * whop;
 	indices[i * 2 + 1] = i * whop + wlen;
     }
 
-    if (indices[(*nbands - 1) * 2 + 1] > nfreqs) {
+    if (indices[(*nbands - 1) * 2 + 1] > nfreqs)
+    {
 	indices[(*nbands - 2) * 2 + 1] = nfreqs;
 	indices[(*nbands - 1) * 2] = 0;
 	indices[(*nbands - 1) * 2 + 1] = 0;
 	*nbands = *nbands - 1;
-    } else if (indices[(*nbands - 1) * 2 + 1] < nfreqs) {
+    }
+    else if (indices[(*nbands - 1) * 2 + 1] < nfreqs)
+    {
 	indices[(*nbands - 1) * 2 + 1] = nfreqs;
     }
 }
@@ -308,16 +394,19 @@ void levinson(int p, double *phi, float *poles)
     float g;
     E[0] = phi[0];
 
-    for ( int i = 1; i <= p; i++ ) {
+    for ( int i = 1; i <= p; i++ )
+    {
 	k[i] = -phi[i];
-	for ( int j = 1; j <= i-1; j++ ) {
+	for ( int j = 1; j <= i-1; j++ )
+	{
 	    k[i] -= (phi[i-j] * alpha[(i-1)*(p+1)+j]);
 	}
 	k[i] /= E[i-1];
 
 	alpha[i*(p+1)] = 1;
 	alpha[i*(p+1)+i] = k[i];
-	for ( int j = 1; j <= i-1; j++ ) {
+	for ( int j = 1; j <= i-1; j++ )
+	{
 	    alpha[i*(p+1)+j] = alpha[(i-1)*(p+1)+j] + k[i]*alpha[(i-1)*(p+1)+i-j];
 	}
 	E[i] = (1-k[i]*k[i])*E[i-1];
@@ -326,7 +415,8 @@ void levinson(int p, double *phi, float *poles)
     // Copy final iteration coeffs to output array
     g = sqrt(E[p]);
 
-    for ( int i = 0; i <= p; i++ ) {
+    for ( int i = 0; i <= p; i++ )
+    {
 	poles[i] = alpha[p*(p+1)+i];
 	if (do_gain_norm == 0)
 	{
@@ -339,7 +429,6 @@ void levinson(int p, double *phi, float *poles)
 	    //	printf("No Gain Normalization ");
 	    //	 printf("Poles %4.4f ",poles[i]);
 	}
-
     }
     //printf("Gain Normalization Flag is %d ",do_gain_norm);	
     //printf("Poles %4.4f ",poles[0]);
@@ -355,11 +444,16 @@ void lpc( double *y, int len, int order, int compr, float *poles )
     int N = pow(2,ceil(log2(2*len-1)));
 
     double *Y = (double *) MALLOC( N*sizeof(double) );
-    for ( int n = 0; n < N; n++ ) {
+    for ( int n = 0; n < N; n++ )
+    {
 	if ( n <= len )
+	{
 	    Y[n] = y[n];
+	}
 	else
+	{
 	    Y[n] = 0;
+	}
     }   
 
     complex *X = (complex *) MALLOC( N*sizeof(complex) );
@@ -367,7 +461,8 @@ void lpc( double *y, int len, int order, int compr, float *poles )
     fftw_execute(plan);
     fftw_destroy_plan(plan);
 
-    for ( int n = 0; n < N; n++ ) {
+    for ( int n = 0; n < N; n++ )
+    {
 	X[n] = X[n]*conj(X[n])/len; //add compr
     }
 
@@ -375,7 +470,8 @@ void lpc( double *y, int len, int order, int compr, float *poles )
     plan = fftw_plan_dft_c2r_1d(N, X, R, FFTW_ESTIMATE);
     fftw_execute(plan);
     fftw_destroy_plan(plan);
-    for ( int n = 0; n < N; n++ ) {
+    for ( int n = 0; n < N; n++ )
+    {
 	R[n] /= N;
     }
 
@@ -390,14 +486,16 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, float *wts, int *indices, int 
 {
     double *y = (double *) MALLOC(N*sizeof(double));
 
-    for ( int n = 0; n < N; n++ ) {
+    for ( int n = 0; n < N; n++ )
+    {
 	y[n] = (double) x[n];
     }
 
     fftw_plan plan = fftw_plan_r2r_1d(N, y, y, FFTW_REDFT10, FFTW_ESTIMATE);
     fftw_execute(plan);
     fftw_destroy_plan(plan);
-    for ( int n = 0; n < N; n++ ) {
+    for ( int n = 0; n < N; n++ )
+    {
 	y[n] /= sqrt(2.0*N);
     }
     y[0] /= sqrt(2);
@@ -407,14 +505,19 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, float *wts, int *indices, int 
 
     // Time envelope estimation per band and per frame.
     double *y_filt = (double *) MALLOC(N*sizeof(double));	 
-    for ( int i = 0; i < nbands; i++ ) {
+    for ( int i = 0; i < nbands; i++ )
+    {
 	int Nsub = indices[2*i+1]-indices[2*i]+1;
 	for ( int n = 0; n < N; n++ )
 	{
 	    if ( n < Nsub )
+	    {
 		y_filt[n] = y[indices[2*i]+n] * wts[i*N+indices[2*i]+n];
+	    }
 	    else
+	    {
 		y_filt[n] = 0;
+	    }
 	}
 	lpc(y_filt,Nsub,*Np,1,p+i*(*Np+1));
     }
@@ -431,10 +534,14 @@ float * fdlpenv_mod( float *p, int Np, int N )
 
     int nfft = pow(2,ceil(log2(N))+1);
     double *Y = (double *) MALLOC( nfft*sizeof(double) );
-    for ( int n = 0; n < nfft; n++ ) {
-	if ( n <= Np ) {
+    for ( int n = 0; n < nfft; n++ )
+    {
+	if ( n <= Np )
+	{
 	    Y[n] = p[n];
-	} else {
+	}
+	else
+	{
 	    Y[n] = 0;
 	}
     }   
@@ -447,7 +554,8 @@ float * fdlpenv_mod( float *p, int Np, int N )
     double *h = (double *) MALLOC( nfft*sizeof(double) );
 
     nfft = nfft/2+1;
-    for ( int n = 0; n < nfft; n++ ) {
+    for ( int n = 0; n < nfft; n++ )
+    {
 	X[n] = 1.0/X[n];
 	h[n] = 2*X[n]*conj(X[n]);
     }
@@ -461,9 +569,12 @@ float * fdlpenv_mod( float *p, int Np, int N )
 	float dleft = p - floor(p*nfft)/nfft;
 	float dright = ceil(p*nfft)/nfft - p;
 
-	if ( nleft == nright ) {
+	if ( nleft == nright )
+	{
 	    env[n] = h[nleft];
-	} else {
+	}
+	else
+	{
 	    env[n] = (h[nleft]*dright + h[nright]*dleft)/(dleft+dright);
 	}
     }
@@ -479,14 +590,19 @@ float * fdlpenv_mod( float *p, int Np, int N )
 void spec2cep(float * frames, int fdlpwin, int nframes, int ncep, int nbands, int band, int offset, float *feats, int log_flag) 
 {
 
-    if ( dctm == NULL ) {
+    if ( dctm == NULL )
+    {
 	dctm = (float *) MALLOC(fdlpwin*ncep*sizeof(float));
 
-	for ( int i = 0; i < ncep; i++ ) {
-	    for ( int j = 0; j < fdlpwin; j++ ) {
+	for ( int i = 0; i < ncep; i++ )
+	{
+	    for ( int j = 0; j < fdlpwin; j++ )
+	    {
 		dctm[i*fdlpwin+j] = cos(M_PI*i*(2.0*((float)j)+1)/(2.0*fdlpwin)) * sqrt(2.0/((float)fdlpwin));
 		if ( i == 0 ) 
+		{
 		    dctm[i*fdlpwin+j] /= sqrt(2);
+		}
 	    }
 	}
     }
@@ -495,13 +611,17 @@ void spec2cep(float * frames, int fdlpwin, int nframes, int ncep, int nbands, in
     {
 	float *frame = frames + f*fdlpwin;
 	float *feat =  feats + f*2*ncep*nbands + band*2*ncep + offset;
-	for ( int i = 0; i < ncep; i++ ) {
+	for ( int i = 0; i < ncep; i++ )
+	{
 	    feat[i] = 0;
-	    for ( int j = 0; j < fdlpwin; j++ ) {
-
+	    for ( int j = 0; j < fdlpwin; j++ )
+	    {
 		if ( log_flag )
+		{
 		    feat[i] += frame[j]*dctm[i*fdlpwin+j];
-		else {
+		}
+		else
+		{
 		    feat[i] += icsi_log(frame[j],LOOKUP_TABLE,nbits_log)*dctm[i*fdlpwin+j];
 		}
 	    }
@@ -511,14 +631,19 @@ void spec2cep(float * frames, int fdlpwin, int nframes, int ncep, int nbands, in
 
 void spec2cep4energy(float * frames, int fdlpwin, int nframes, int ncep, float *final_feats, int log_flag)
 {
-    if ( dctm == NULL ) {
+    if ( dctm == NULL )
+    {
 	dctm = (float *) MALLOC(fdlpwin*ncep*sizeof(float));
 
-	for ( int i = 0; i < ncep; i++ ) {
-	    for ( int j = 0; j < fdlpwin; j++ ) {
+	for ( int i = 0; i < ncep; i++ )
+	{
+	    for ( int j = 0; j < fdlpwin; j++ )
+	    {
 		dctm[i*fdlpwin+j] = cos(M_PI*i*(2.0*((float)j)+1)/(2.0*fdlpwin)) * sqrt(2.0/((float)fdlpwin));
 		if ( i == 0 )
+		{
 		    dctm[i*fdlpwin+j] /= sqrt(2);
+		}
 	    }
 	}
     }
@@ -527,13 +652,18 @@ void spec2cep4energy(float * frames, int fdlpwin, int nframes, int ncep, float *
     {
 	float *frame = frames + f*fdlpwin;
 	float *feat =  feats + f*ncep;
-	for ( int i = 0; i < ncep; i++ ) {
+	for ( int i = 0; i < ncep; i++ )
+	{
 	    feat[i] = 0;
-	    for ( int j = 0; j < fdlpwin; j++ ) {
+	    for ( int j = 0; j < fdlpwin; j++ )
+	    {
 
 		if ( log_flag )
+		{
 		    feat[i] += frame[j]*dctm[i*fdlpwin+j];
-		else {
+		}
+		else
+		{
 		    feat[i] += (0.33*icsi_log(frame[j],LOOKUP_TABLE,nbits_log))*dctm[i*fdlpwin+j]; //Cubic root compression and log
 		    // feat[i] += log(frame[j])*dctm[i*fdlpwin+j];
 		}
@@ -544,12 +674,24 @@ void spec2cep4energy(float * frames, int fdlpwin, int nframes, int ncep, float *
     float *tempdel = deltas(feats,nframes,ncep,5);
     float *ddel = deltas(tempdel,nframes,ncep,5);
     int dim = 3*ncep;
-    for ( int f = 0; f < nframes; f++ ){ 
-	for (int cep = 0; cep < dim; cep++){
-	    if (cep < ncep) final_feats[f*dim+cep]=feats[f*ncep+cep];
-	    else if (cep < 2*ncep) final_feats[f*dim+cep]=del[f*ncep+cep-ncep];
-	    else final_feats[f*dim+cep]=ddel[f*ncep+cep-2*ncep];
-	}}	
+    for ( int f = 0; f < nframes; f++ )
+    {
+	for (int cep = 0; cep < dim; cep++)
+	{
+	    if (cep < ncep)
+	    {
+		final_feats[f*dim+cep]=feats[f*ncep+cep];
+	    }
+	    else if (cep < 2*ncep)
+	    {
+		final_feats[f*dim+cep]=del[f*ncep+cep-ncep];
+	    }
+	    else
+	    {
+		final_feats[f*dim+cep]=ddel[f*ncep+cep-2*ncep];
+	    }
+	}
+    }	
     FREE(feats);
     FREE(tempdel);
     FREE(del);
@@ -585,28 +727,37 @@ void compute_fdlp_feats( short *x, int N, int Fs, int nbands, int nceps, float *
     int nframes;
     float *hamm = hamming(flen);  // Defining the Hamming window
     float *energybands = (float *) MALLOC(fnum*nbands*sizeof(float)) ; //Energy of features	
-    for (int i = 0; i < nbands; i++ ) {
+    for (int i = 0; i < nbands; i++ )
+    {
 	float *env = fdlpenv_mod(p+i*(Np+1), Np, fdlplen);
-	if (do_spec){
+	if (do_spec)
+	{
 	    float *frames = fconstruct_frames(&env, &send, flen, flen-fhop, &nframes);
-	    for (int fr = 0; fr < fnum;fr++){
+	    for (int fr = 0; fr < fnum;fr++)
+	    {
 		float *envwind = frames+fr*flen;
 		float temp = 0;
 		for (int ind =0;ind<flen;ind++) 
+		{
 		    temp +=  envwind[ind]*hamm[ind];
+		}
 
 		energybands[fr*nbands+i]= temp;
 
-		if (specgrm) feats[fr*nbands+i] = 0.33*log(temp);
-
+		if (specgrm)
+		{
+		    feats[fr*nbands+i] = 0.33*log(temp);
+		}
 	    }
 	    FREE(frames);
 	    FREE(env);
 
 	}
-	else{ 
+	else
+	{ 
 	    for (int k =0;k<N;k++)
-	    { //env_log[k] = log(env[k]);
+	    {
+		//env_log[k] = log(env[k]);
 		env_log[k] = icsi_log(env[k],LOOKUP_TABLE,nbits_log);     
 		sleep(0);	// Found out that icsi log is too fast and gives errors 
 	    }
@@ -615,13 +766,20 @@ void compute_fdlp_feats( short *x, int N, int Fs, int nbands, int nceps, float *
 	    //	printf("env_log[100] = %4.4f\n",log(env[100]));
 	    //	printf("icsi_env_log[100] = %4.4f\n",icsi_log(env[100],LOOKUP_TABLE,nbits_log)) ;
 
-	    for ( int n = 0; n < Npad1; n++ ) {
+	    for ( int n = 0; n < Npad1; n++ )
+	    {
 		if ( n < mirr_len )
+		{
 		    env_pad1[n] = env_log[mirr_len-1-n];
+		}
 		else if ( n >= mirr_len && n < mirr_len + send )
+		{
 		    env_pad1[n] = env_log[n-mirr_len];	    
+		}
 		else
+		{
 		    env_pad1[n] = env_log[send-(n-mirr_len-send+1)];
+		}
 	    }
 
 	    float * frames = fconstruct_frames(&env_pad1, &Npad1, fdlpwin, fdlpolap, &nframes);
@@ -632,33 +790,47 @@ void compute_fdlp_feats( short *x, int N, int Fs, int nbands, int nceps, float *
 
 	    // do delta here
 	    float maxenv = 0;
-	    for ( int n = 0; n < Npad2; n++ ) {
-		if ( n < 1000 ) {
+	    for ( int n = 0; n < Npad2; n++ )
+	    {
+		if ( n < 1000 )
+		{
 		    env_pad2[n] = env[0];
-		} else {
+		}
+		else
+		{
 		    env_pad2[n] = env[n-1000];
 		}
 
-		if ( env_pad2[n] > maxenv ) {
+		if ( env_pad2[n] > maxenv )
+		{
 		    maxenv = env_pad2[n];
 		}
 	    }
 
-	    for ( int n = 0; n < Npad2; n++ ) {
+	    for ( int n = 0; n < Npad2; n++ )
+	    {
 		env_pad2[n] /= maxenv;
 	    }      
 
 	    adapt_m(env_pad2,Npad2,Fs,env_adpt);
-	    //for ( int n = 0; n < Npad2; n++ ) {
+	    //for ( int n = 0; n < Npad2; n++ )
+	    //{
 	    //} 
 
-	    for ( int n = 0; n < Npad1; n++ ) {
+	    for ( int n = 0; n < Npad1; n++ )
+	    {
 		if ( n < mirr_len )
+		{
 		    env_pad1[n] = env_adpt[mirr_len-1-n+1000];
+		}
 		else if ( n >= mirr_len && n < mirr_len + send )
+		{
 		    env_pad1[n] = env_adpt[n-mirr_len+1000];	    
+		}
 		else
+		{
 		    env_pad1[n] = env_adpt[send-(n-mirr_len-send+1)+1000];
+		}
 	    }
 
 	    frames = fconstruct_frames(&env_pad1, &Npad1, fdlpwin, fdlpolap, &nframes);
@@ -667,13 +839,18 @@ void compute_fdlp_feats( short *x, int N, int Fs, int nbands, int nceps, float *
 
 	    FREE(frames);
 	    FREE(env);
-
 	}
     }
-    if (do_spec){
-	if (specgrm){ fprintf(stderr,"specgram flag =%d\n",specgrm);
+    if (do_spec)
+    {
+	if (specgrm)
+	{
+	    fprintf(stderr,"specgram flag =%d\n",specgrm);
 	}
-	else spec2cep4energy(energybands, nbands, nframes, nceps, feats, 0);
+	else
+	{
+	    spec2cep4energy(energybands, nbands, nframes, nceps, feats, 0);
+	}
     }
 
     FREE(env_pad1);
@@ -690,7 +867,8 @@ int main(int argc, char **argv)
 { 
     parse_args(argc, argv);
 
-    if (axis == AXIS_LINEAR && !do_spec) {
+    if ((axis == AXIS_LINEAR_MEL || axis == AXIS_LINEAR_BARK) && !do_spec)
+    {
 	fprintf(stderr, "Linear frequency axis is only available for short-term (spectral) features.\n");
 	usage();
     }
@@ -728,7 +906,8 @@ int main(int argc, char **argv)
 	    nyqbar = hz2bark(Fs/2);
 	    nbands = ceil(nyqbar)+1;
 	    break;
-	case AXIS_LINEAR:
+	case AXIS_LINEAR_MEL:
+	case AXIS_LINEAR_BARK:
 	    nyqbar = Fs/2;
 	    nbands = min(96, (int)roundf(N/100));
 	    break;
@@ -745,7 +924,8 @@ int main(int argc, char **argv)
 	case AXIS_BARK:
 	    barkweights(fdlpwin, Fs, dB, wts, indices, &nbands);
 	    break;
-	case AXIS_LINEAR:
+	case AXIS_LINEAR_MEL:
+	case AXIS_LINEAR_BARK:
 	    linweights(fdlpwin, Fs, dB, wts, indices, &nbands);
 	    break;
     }
@@ -755,10 +935,16 @@ int main(int argc, char **argv)
     int nceps = 14;
     int nfeatfr = 498; 
     int dim = nbands*nceps*2;
-    if (do_spec){
+    if (do_spec)
+    {
 	if (specgrm) 
-	{ dim = nbands; do_spec = 1;nceps=nbands;}
-	else {
+	{
+	    dim = nbands;
+	    do_spec = 1;
+	    nceps=nbands;
+	}
+	else
+	{
 	    nceps=13; 
 	    dim = nceps*3;
 	} 
@@ -766,7 +952,8 @@ int main(int argc, char **argv)
     float *feats = (float *) MALLOC(nfeatfr*nframes*dim*sizeof(float));
     fprintf(stderr, "Parameters: (nframes=%d,  dim=%d)\n", nframes, dim); 
     tic();
-    for ( int f = 0; f < nframes; f++ ) {
+    for ( int f = 0; f < nframes; f++ )
+    {
 	short *xwin = frames+f*fdlpwin;
 	sdither( xwin, fdlpwin, 1 );
 	sub_mean( xwin, fdlpwin );
@@ -788,10 +975,12 @@ int main(int argc, char **argv)
     FREE(feats);
     FREE(wts);
     FREE(indices);
-    if (!(specgrm)) FREE(dctm);
+    if (!(specgrm))
+	FREE(dctm);
     FREE(LOOKUP_TABLE);
     int mc = get_malloc_count();
-    if(mc != 0) fprintf(stderr,"WARNING: %d malloc'd items not free'd\n", mc);
+    if (mc != 0)
+	fprintf(stderr,"WARNING: %d malloc'd items not free'd\n", mc);
 
     return 0;
 }
