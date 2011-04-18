@@ -12,20 +12,24 @@
 # define pi 3.14159265
 void adapt_m(float * in, int N, float fsample, float * out);
 
+#define AXIS_BARK 0
+#define AXIS_MEL 1
+#define AXIS_LINEAR 2
+
 char *infile = NULL;
 char *outfile = NULL;
 char *printfile = NULL;
 int Fs = 8000;
 int do_gain_norm = 1;
 int do_spec = 0;
-int do_mel = 0;
+int axis = 0;
 float * dctm = NULL;
 float *LOOKUP_TABLE = NULL;
 int nbits_log = 14;
 int specgrm = 0;
 void usage()
 {
-  fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel (bark)\n -specgram <flag> - Spectrogram output (0)\n");
+  fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear (bark)\n -specgram <flag> - Spectrogram output (0)\n");
 }
 
 void parse_args(int argc, char **argv)
@@ -37,7 +41,20 @@ void parse_args(int argc, char **argv)
      else if ( strcmp(argv[i], "-sr") == 0 ) Fs = atoi(argv[++i]);
      else if ( strcmp(argv[i], "-gn") == 0 ) do_gain_norm = atoi(argv[++i]);
      else if ( strcmp(argv[i], "-spec") == 0 ) do_spec = atoi(argv[++i]);	
-     else if ( strcmp(argv[i], "-axis") == 0 ) do_mel = strcmp(argv[++i], "bark");
+     else if ( strcmp(argv[i], "-axis") == 0 )
+     {
+	 i++;
+	 if(strcmp(argv[i], "bark") == 0)
+	     axis = AXIS_BARK;
+	 else if (strcmp(argv[i], "mel") == 0)
+	     axis = AXIS_MEL;
+	 else if (strcmp(argv[i], "linear") == 0)
+	     axis = AXIS_LINEAR;
+	 else {
+	     fprintf(stderr, "unknown frequency axis scale: %s\n", argv[i]);
+	     usage();
+	 }
+     }
      else if ( strcmp(argv[i], "-specgram") == 0 ) {specgrm = atoi(argv[++i]); if (specgrm) do_spec = 1;}
      else {
        fprintf(stderr, "unknown arg: %s\n", argv[i]);
@@ -196,11 +213,11 @@ float hz2mel( float hz )
 }
 
 
-void barkweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int nbands)
+void barkweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int *nbands)
 {
    // bark per filt
    float nyqbark = hz2bark(Fs/2);
-   float step_barks = nyqbark/(nbands - 1);
+   float step_barks = nyqbark/(*nbands - 1);
    float *binbarks = (float *) MALLOC(nfreqs*sizeof(float));
 
    // Bark frequency of every bin in FFT
@@ -208,7 +225,7 @@ void barkweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int nba
       binbarks[i] = hz2bark(((float)i*(Fs/2))/(nfreqs-1));
    }
 
-   for ( int i = 0; i < nbands; i++ ) {
+   for ( int i = 0; i < *nbands; i++ ) {
       float f_bark_mid = i*step_barks;
       for ( int j = 0; j < nfreqs; j++ ) {
 	 wts[i*nfreqs+j] = exp(-0.5*pow(binbarks[j]-f_bark_mid,2));
@@ -218,7 +235,7 @@ void barkweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int nba
    // compute frequency range where each filter exceeds dB threshold
    float lin = pow(10,-dB/20);
 
-   for ( int i = 0; i < nbands; i++ ) {
+   for ( int i = 0; i < *nbands; i++ ) {
       int j = 0;
       while ( wts[i*nfreqs+(j++)] < lin );
       indices[i*2] = j-1;
@@ -229,17 +246,17 @@ void barkweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int nba
 
    FREE(binbarks);
 }
-void melweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int nbands)
+void melweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int *nbands)
 {
    float nyqmel = hz2mel(Fs/2);
-   float step_mels = nyqmel/(nbands - 1);
+   float step_mels = nyqmel/(*nbands - 1);
    float *binmels = (float *) MALLOC(nfreqs*sizeof(float));
 
    for ( int i = 0; i < nfreqs; i++ ) {
       binmels[i] = hz2mel(((float)i*(Fs/2))/(nfreqs-1));
    }
 
-   for ( int i = 0; i < nbands; i++ ) {
+   for ( int i = 0; i < *nbands; i++ ) {
       float f_mel_mid = i*step_mels;
       for ( int j = 0; j < nfreqs; j++ ) {
          wts[i*nfreqs+j] = exp(-0.5*pow(binmels[j]-f_mel_mid,2));
@@ -248,7 +265,7 @@ void melweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int nban
 
    float lin = pow(10,-dB/20);
 
-   for ( int i = 0; i < nbands; i++ ) {
+   for ( int i = 0; i < *nbands; i++ ) {
       int j = 0;
       while ( wts[i*nfreqs+(j++)] < lin );
       indices[i*2] = j-1;
@@ -260,6 +277,28 @@ void melweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int nban
    FREE(binmels);
 }
 
+void linweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int *nbands)
+{
+   int whop = (int)roundf(nfreqs / (*nbands + 3.5));
+   int wlen = (int)roundf(2.5 * whop);
+
+   for(int i = 0; i < *nbands; i++) {
+       for(int j = 0; j < nfreqs; j++) {
+	   wts[i * nfreqs + j] = 1.;
+       }
+       indices[i*2] = i * whop;
+       indices[i * 2 + 1] = i * whop + wlen;
+   }
+   
+   if (indices[(*nbands - 1) * 2 + 1] > nfreqs) {
+       indices[(*nbands - 2) * 2 + 1] = nfreqs;
+       indices[(*nbands - 1) * 2] = 0;
+       indices[(*nbands - 1) * 2 + 1] = 0;
+       *nbands = *nbands - 1;
+   } else if (indices[(*nbands - 1) * 2 + 1] < nfreqs) {
+       indices[(*nbands - 1) * 2 + 1] = nfreqs;
+   }
+}
 
 void levinson(int p, double *phi, float *poles)
 {
@@ -672,15 +711,38 @@ int main(int argc, char **argv)
    
    // Construct the auditory filterbank
    float nyqbar;
-   if (do_mel)   nyqbar = hz2mel(Fs/2); 
-   else    nyqbar = hz2bark(Fs/2);
+   int nbands = 0;
+   switch (axis)
+   {
+       case AXIS_MEL:
+	   nyqbar = hz2mel(Fs/2);
+	   nbands = ceil(nyqbar)+1;
+	   break;
+       case AXIS_BARK:
+	   nyqbar = hz2bark(Fs/2);
+	   nbands = ceil(nyqbar)+1;
+	   break;
+       case AXIS_LINEAR:
+	   nyqbar = Fs/2;
+	   nbands = min(96, (int)roundf(N/100));
+	   break;
+   }
 
-   int nbands = ceil(nyqbar)+1;
    float dB = 48;
    float *wts = (float *) MALLOC(nbands*fdlpwin*sizeof(float));
    int *indices = (int *) MALLOC(nbands*2*sizeof(int));
-   if (do_mel)   melweights(fdlpwin, Fs, dB, wts, indices, nbands); 
-   else barkweights(fdlpwin, Fs, dB, wts, indices, nbands);
+   switch (axis)
+   {
+       case AXIS_MEL:
+	   melweights(fdlpwin, Fs, dB, wts, indices, &nbands);
+	   break;
+       case AXIS_BARK:
+	   barkweights(fdlpwin, Fs, dB, wts, indices, &nbands);
+	   break;
+       case AXIS_LINEAR:
+	   linweights(fdlpwin, Fs, dB, wts, indices, &nbands);
+	   break;
+   }
 
    printf("Number of sub-bands = %d\n",nbands);	
    // Compute the feature vector time series
@@ -688,12 +750,12 @@ int main(int argc, char **argv)
    int nfeatfr = 498; 
    int dim = nbands*nceps*2;
    if (do_spec){
-   if (specgrm) 
-	{ dim = nbands; do_spec = 1;nceps=nbands;}
-   else {
-   nceps=13; 
-   dim = nceps*3;
-   } 
+       if (specgrm) 
+       { dim = nbands; do_spec = 1;nceps=nbands;}
+       else {
+	   nceps=13; 
+	   dim = nceps*3;
+       } 
    }
    float *feats = (float *) MALLOC(nfeatfr*nframes*dim*sizeof(float));
    fprintf(stderr, "Parameters: (nframes=%d,  dim=%d)\n", nframes, dim); 
