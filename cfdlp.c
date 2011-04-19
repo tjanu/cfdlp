@@ -28,9 +28,11 @@ float * dctm = NULL;
 float *LOOKUP_TABLE = NULL;
 int nbits_log = 14;
 int specgrm = 0;
+float *fft2decompm = NULL;
+
 void usage()
 {
-    fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear (bark)\n -specgram <flag> - Spectrogram output (0)\n");
+    fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n");
 }
 
 void parse_args(int argc, char **argv)
@@ -99,8 +101,8 @@ void parse_args(int argc, char **argv)
 
     if ( !infile || !outfile || !printfile )
     {
+	fprintf(stderr, "\nERROR: infile (-i), outfile (-o), and printfile (-print) args is required");
 	usage();
-	fatal("\nERROR: infile (-i), outfile (-o), and printfile (-print) args is required");
     }
 
     if ((axis == AXIS_LINEAR_MEL || axis == AXIS_LINEAR_BARK) && !do_spec)
@@ -704,6 +706,126 @@ void spec2cep4energy(float * frames, int fdlpwin, int nframes, int ncep, float *
     FREE(ddel);
 }
 
+float * fft2melmx(int nfft, int *nbands)
+{
+    int nfilts = (int)ceilf(hz2mel(Fs/2.)) + 1; 
+    *nbands = nfilts;
+    float *matrix = (float *) MALLOC(nfilts * nfft * sizeof(float));
+
+    float *fftfreqs = (float *) MALLOC(nfft * sizeof(float));
+
+    float minmel = hz2mel(0);
+    float maxmel = hz2mel(Fs/2.);
+    float *binfrqs = (float *) MALLOC((nfilts + 2) * sizeof(float));
+
+    // center freqs of each fft bin
+    for (int i = 0; i < nfft; i++)
+    {
+	fftfreqs[i] = i / nfft * Fs;
+    }
+
+    // 'center freqs' of mel bins
+    for (int i = 0; i < nfilts + 2; i++)
+    {
+	binfrqs[i] = minmel + i / (nfilts + 1) * (maxmel - minmel);
+    }
+
+    for (int i = 0; i < nfilts; i++)
+    {
+	float fs[3];
+	fs[0] = binfrqs[i];
+	fs[1] = binfrqs[i+1];
+	fs[2] = binfrqs[i+2];
+
+	for (int j = 0; j < nfft; j++) {
+	    float loslope = (fftfreqs[j] - fs[0]) / (fs[1] - fs[0]);
+	    float hislope = (fs[2] - fftfreqs[j]) / (fs[2] - fs[1]);
+	    matrix[i * nfft + j] = max(0, min(hislope, loslope));
+	}
+    }
+
+    FREE(fftfreqs);
+    FREE(binfrqs);
+    return matrix;
+}
+
+float * fft2barkmx(int nfft, int *nbands)
+{
+    int nfilts = (int)ceilf(hz2bark(Fs/2.)) + 1;
+    *nbands = nfilts;
+    float *matrix = (float *) MALLOC(nfilts * nfft * sizeof(float));
+    float min_bark = hz2bark(0);
+    float nyqbark = hz2bark(Fs / 2) - min_bark;
+    // bark per filter
+    float step_barks = nyqbark / (nfilts-1);
+    // frequency of every fft bin in bark
+    float *binbarks = (float *) MALLOC(((nfft/2) + 1) * sizeof(float));
+
+    for (int i = 0; i < (nfft/2) + 1; i++)
+    {
+	binbarks[i] = hz2bark(i * Fs / nfft);
+    }
+
+    for (int i = 0; i < nfilts; i++)
+    {
+	float f_bark_mid = min_bark + i * step_barks;
+	for (int j = 0; j < nfft; j++)
+	{
+	    if (j <= nfft / 2)
+	    {
+		float loslope = (binbarks[j] - f_bark_mid) - 0.5;
+		float hislope = (binbarks[j] - f_bark_mid) + 0.5;
+		matrix[i * nfft + j] = powf(10.f, max(0.f, min(hislope, -2.5 * loslope)));
+	    }
+	    else
+	    {
+		matrix[i * nfft + j] = 0.;
+	    }
+	}
+    }
+
+    FREE(binbarks);
+    return matrix;
+}
+
+void audspec(float **bands, int *nbands, int nframes)
+{
+    float *energybands = *bands;
+
+    int nfft = (*nbands - 1) * 2;
+    int nfilts = 0;
+
+    if (fft2decompm == NULL) {
+	if (axis == AXIS_LINEAR_MEL) {
+	    fft2decompm = fft2melmx(nfft, &nfilts);
+	} else if (axis == AXIS_LINEAR_BARK) {
+	    fft2decompm = fft2barkmx(nfft, &nfilts);
+	} else {
+	    fatal("Something went terribly wrong. Trying to convert linear to other band decomposition without having a linear decomp in the first place?.\n");
+	}
+    }
+
+    float *new_bands = (float *) MALLOC (nfilts * nframes * sizeof(float));
+
+    for (int f = 0; f < nframes; f++)
+    {
+	float *frame = energybands + f * *nbands;
+	float *newframe = new_bands + f * nfilts;
+	for (int i = 0; i < nfilts; i++)
+	{
+	    newframe[i] = 0.;
+	    float *transform = fft2decompm + i * nfft;
+	    for (int j = 0; j < *nbands; j++)
+	    {
+		newframe[i] += frame[j] * transform[j];
+	    }
+	}
+    }
+
+    FREE(energybands);
+    *bands = new_bands;
+    *nbands = nfilts;
+}
 
 void compute_fdlp_feats( short *x, int N, int Fs, int nbands, int nceps, float *wts, int *indices, float *feats )
 {
@@ -849,6 +971,9 @@ void compute_fdlp_feats( short *x, int N, int Fs, int nbands, int nceps, float *
     }
     if (do_spec)
     {
+	if (axis == AXIS_LINEAR_MEL || axis == AXIS_LINEAR_BARK) {
+	    audspec(&energybands, &nbands, nframes);
+	}
 	if (specgrm)
 	{
 	    fprintf(stderr,"specgram flag =%d\n",specgrm);
@@ -977,6 +1102,8 @@ int main(int argc, char **argv)
     FREE(indices);
     if (!(specgrm))
 	FREE(dctm);
+    if (fft2decompm != NULL)
+	FREE(fft2decompm);
     FREE(LOOKUP_TABLE);
     int mc = get_malloc_count();
     if (mc != 0)
