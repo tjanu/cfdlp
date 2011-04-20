@@ -292,6 +292,25 @@ float hz2mel( float hz )
     return z; 
 }
 
+float mel2hz(float mel)
+{
+  float f_0 = 0;
+  float f_sp = 200 / 3;
+  float brkfrq = 1000;
+  float brkpt = (brkfrq - f_0)/f_sp;
+  float z;
+  float logstep = exp(log(6.4)/27);
+
+  if (mel < brkpt)
+  {
+      z = f_0 + f_sp * mel;
+  }
+  else
+  {
+      z = brkfrq * exp(log(logstep) * (mel - brkpt));
+  }
+  return z;
+}
 
 void barkweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int *nbands)
 {
@@ -366,31 +385,37 @@ void melweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int *nba
     FREE(binmels);
 }
 
-void linweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int *nbands)
+void linweights(int nfreqs, int Fs, float dB, float **wts, int **indices, int *nbands)
 {
-    int whop = (int)roundf(nfreqs / (*nbands + 3.5));
-    int wlen = (int)roundf(2.5 * whop);
+    int whop = (int)roundf((float)nfreqs / ((float)(*nbands) + 3.5));
+    int wlen = (int)roundf(2.5 * (float)whop);
+
+    int reqbands = ceil(((float)nfreqs-wlen)/(whop + 1));
+    *wts = (float *)realloc(*wts, reqbands * nfreqs * sizeof(float));
+    *indices = (int *)realloc(*indices, reqbands * 2 * sizeof(int));
+
+    *nbands = reqbands;
 
     for(int i = 0; i < *nbands; i++)
     {
 	for(int j = 0; j < nfreqs; j++)
 	{
-	    wts[i * nfreqs + j] = 1.;
+	    (*wts)[i * nfreqs + j] = 1.;
 	}
-	indices[i*2] = i * whop;
-	indices[i * 2 + 1] = i * whop + wlen;
+	(*indices)[i*2] = i * whop;
+	(*indices)[i * 2 + 1] = i * whop + wlen;
     }
 
-    if (indices[(*nbands - 1) * 2 + 1] > nfreqs)
+    if ((*indices)[(*nbands - 1) * 2 + 1] > nfreqs)
     {
-	indices[(*nbands - 2) * 2 + 1] = nfreqs;
-	indices[(*nbands - 1) * 2] = 0;
-	indices[(*nbands - 1) * 2 + 1] = 0;
+	(*indices)[(*nbands - 2) * 2 + 1] = nfreqs;
+	(*indices)[(*nbands - 1) * 2] = 0;
+	(*indices)[(*nbands - 1) * 2 + 1] = 0;
 	*nbands = *nbands - 1;
     }
-    else if (indices[(*nbands - 1) * 2 + 1] < nfreqs)
+    else if ((*indices)[(*nbands - 1) * 2 + 1] < nfreqs)
     {
-	indices[(*nbands - 1) * 2 + 1] = nfreqs;
+	(*indices)[(*nbands - 1) * 2 + 1] = nfreqs;
     }
 }
 
@@ -508,7 +533,19 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, float *wts, int *indices, int 
     }
     y[0] /= sqrt(2);
 
-    *Np = round(N/150);
+    switch (axis)
+    {
+	case AXIS_MEL:
+	    *Np = round(N/150);
+	    break;
+	case AXIS_BARK:
+	    *Np = round(N/200);
+	    break;
+	case AXIS_LINEAR_MEL:
+	case AXIS_LINEAR_BARK:
+	    *Np = round((indices[1] - indices[0]) / 12);
+	    break;
+    }
     float *p = (float *) MALLOC( (*Np+1)*nbands*sizeof(float) );
 
     // Time envelope estimation per band and per frame.
@@ -721,13 +758,13 @@ float * fft2melmx(int nfft, int *nbands)
     // center freqs of each fft bin
     for (int i = 0; i < nfft; i++)
     {
-	fftfreqs[i] = i / nfft * Fs;
+	fftfreqs[i] = (float)i / (float)nfft * (float)Fs;
     }
 
     // 'center freqs' of mel bins
     for (int i = 0; i < nfilts + 2; i++)
     {
-	binfrqs[i] = minmel + i / (nfilts + 1) * (maxmel - minmel);
+	binfrqs[i] = mel2hz(minmel + (float)i / ((float)nfilts + 1.) * (maxmel - minmel));
     }
 
     for (int i = 0; i < nfilts; i++)
@@ -738,9 +775,16 @@ float * fft2melmx(int nfft, int *nbands)
 	fs[2] = binfrqs[i+2];
 
 	for (int j = 0; j < nfft; j++) {
-	    float loslope = (fftfreqs[j] - fs[0]) / (fs[1] - fs[0]);
-	    float hislope = (fs[2] - fftfreqs[j]) / (fs[2] - fs[1]);
-	    matrix[i * nfft + j] = max(0, min(hislope, loslope));
+	    if (j <= nfft / 2)
+	    {
+		float loslope = (fftfreqs[j] - fs[0]) / (fs[1] - fs[0]);
+		float hislope = (fs[2] - fftfreqs[j]) / (fs[2] - fs[1]);
+		matrix[i * nfft + j] = MAX(0, MIN(hislope, loslope));
+	    }
+	    else
+	    {
+		matrix[i * nfft + j] = 0.;
+	    }
 	}
     }
 
@@ -763,7 +807,7 @@ float * fft2barkmx(int nfft, int *nbands)
 
     for (int i = 0; i < (nfft/2) + 1; i++)
     {
-	binbarks[i] = hz2bark(i * Fs / nfft);
+	binbarks[i] = hz2bark((float)i * (float)Fs / (float)nfft);
     }
 
     for (int i = 0; i < nfilts; i++)
@@ -775,7 +819,7 @@ float * fft2barkmx(int nfft, int *nbands)
 	    {
 		float loslope = (binbarks[j] - f_bark_mid) - 0.5;
 		float hislope = (binbarks[j] - f_bark_mid) + 0.5;
-		matrix[i * nfft + j] = powf(10.f, max(0.f, min(hislope, -2.5 * loslope)));
+		matrix[i * nfft + j] = powf(10.f, MIN(0.f, MIN(hislope, -2.5 * loslope)));
 	    }
 	    else
 	    {
@@ -803,24 +847,69 @@ void audspec(float **bands, int *nbands, int nframes)
 	} else {
 	    fatal("Something went terribly wrong. Trying to convert linear to other band decomposition without having a linear decomp in the first place?.\n");
 	}
+	fprintf(stderr, "Just created the fft2decompm matrix, printing out into file fft2decompm.ascii\n");
+	FILE *fft2decompfile = fopen("fft2decompm.ascii", "w");
+	for (int i = 0; i < nfilts; i++) {
+	    for (int j = 0; j < nfft; j++) {
+		fprintf(fft2decompfile, "%g ", fft2decompm[i * nfft + j]);
+	    }
+	    fprintf(fft2decompfile, "\n");
+	}
+	fclose(fft2decompfile);
+	fprintf(stderr, "Done.\n");
     }
+
+//    fprintf(stderr, "Printing out energybands matrix before multiplication into energybands.ascii.\n");
+//    FILE *ebandsfile = fopen("energybands.ascii", "w");
+//    for (int i = 0; i < *nbands; i++) {
+//	for (int fr = 0; fr < nframes; fr++) {
+//	    fprintf(ebandsfile, "%g ", energybands[fr * (*nbands) + i]);
+//	}
+//	fprintf(ebandsfile, "\n");
+//    }
+//    fclose(ebandsfile);
+//    fprintf(stderr, "Done.\n");
 
     float *new_bands = (float *) MALLOC (nfilts * nframes * sizeof(float));
 
-    for (int f = 0; f < nframes; f++)
+    for (int i = 0; i < nfilts; i++)
     {
-	float *frame = energybands + f * *nbands;
-	float *newframe = new_bands + f * nfilts;
-	for (int i = 0; i < nfilts; i++)
+	for (int f = 0; f < nframes; f++)
 	{
-	    newframe[i] = 0.;
-	    float *transform = fft2decompm + i * nfft;
+	    float temp = 0.;
 	    for (int j = 0; j < *nbands; j++)
 	    {
-		newframe[i] += frame[j] * transform[j];
+		temp += energybands[f * (*nbands) + j] * fft2decompm[i * nfft + j];
 	    }
+	    new_bands[f * nfilts + i] = temp;
 	}
     }
+
+//    fprintf(stderr, "Printing out newbands after multiplication into newbands.ascii\n");
+//    FILE *nbandsfile = fopen("newbands.ascii", "w");
+//    for (int i = 0; i < nfilts; i++) {
+//	for (int f = 0; f < nframes; f++) {
+//	    fprintf(nbandsfile, "%g ", new_bands[f * nfilts + i]);
+//	}
+//	fprintf(nbandsfile, "\n");
+//    }
+//    fclose(nbandsfile);
+//    fprintf(stderr, "Done.\n");
+
+//    for (int f = 0; f < nframes; f++)
+//    {
+//	float *frame = energybands + f * *nbands;
+//	float *newframe = new_bands + f * nfilts;
+//	for (int i = 0; i < nfilts; i++)
+//	{
+//	    newframe[i] = 0.;
+//	    float *transform = fft2decompm + i * nfft;
+//	    for (int j = 0; j < *nbands; j++)
+//	    {
+//		newframe[i] += frame[j] * transform[j];
+//	    }
+//	}
+//    }
 
     FREE(energybands);
     *bands = new_bands;
@@ -1034,7 +1123,7 @@ int main(int argc, char **argv)
 	case AXIS_LINEAR_MEL:
 	case AXIS_LINEAR_BARK:
 	    nyqbar = Fs/2;
-	    nbands = min(96, (int)roundf(N/100));
+	    nbands = MIN(96, (int)round((float)N/100.));
 	    break;
     }
 
@@ -1051,11 +1140,11 @@ int main(int argc, char **argv)
 	    break;
 	case AXIS_LINEAR_MEL:
 	case AXIS_LINEAR_BARK:
-	    linweights(fdlpwin, Fs, dB, wts, indices, &nbands);
+	    linweights(fdlpwin, Fs, dB, &wts, &indices, &nbands);
 	    break;
     }
 
-    printf("Number of sub-bands = %d\n",nbands);	
+    fprintf(stderr, "Number of sub-bands = %d\n",nbands);	
     // Compute the feature vector time series
     int nceps = 14;
     int nfeatfr = 498; 
