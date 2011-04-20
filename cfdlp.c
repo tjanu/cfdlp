@@ -99,9 +99,9 @@ void parse_args(int argc, char **argv)
 	}
     }
 
-    if ( !infile || !outfile || !printfile )
+    if ( !infile || !(outfile || printfile) )
     {
-	fprintf(stderr, "\nERROR: infile (-i), outfile (-o), and printfile (-print) args is required");
+	fprintf(stderr, "\nERROR: infile (-i) and at least one of outfile (-o) or printfile (-print) args is required");
 	usage();
     }
 
@@ -1178,10 +1178,16 @@ int main(int argc, char **argv)
 	fprintf(stderr, "%f s\n",toc());
     }
 
-    fprintf(stderr, "Output file = %s (%d frames, dimension %d)\n", outfile, fnum, dim);
-    writefeats_file(outfile, feats, dim, fnum);
-    fprintf(stderr, "Print file = %s (%d frames, dimension %d)\n", printfile, fnum, dim);
-    printfeats_file(printfile, feats, dim, fnum);
+    if (outfile)
+    {
+	fprintf(stderr, "Output file = %s (%d frames, dimension %d)\n", outfile, fnum, dim);
+	writefeats_file(outfile, feats, dim, fnum);
+    }
+    if (printfile)
+    {
+	fprintf(stderr, "Print file = %s (%d frames, dimension %d)\n", printfile, fnum, dim);
+	printfeats_file(printfile, feats, dim, fnum);
+    }
 
     // Free the heap
     FREE(signal);
