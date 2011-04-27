@@ -780,6 +780,7 @@ float * fft2melmx(int nfft, int *nbands)
     float minmel = hz2mel(0);
     float maxmel = hz2mel(Fs/2.);
     float *binfrqs = (float *) MALLOC((nfilts + 2) * sizeof(float));
+    int constamp = 0;
 
     // center freqs of each fft bin
     for (int i = 0; i < nfft; i++)
@@ -800,12 +801,18 @@ float * fft2melmx(int nfft, int *nbands)
 	fs[1] = binfrqs[i+1];
 	fs[2] = binfrqs[i+2];
 
+	float scale_factor = 2. / binfrqs[i+2] - binfrqs[i];
+
 	for (int j = 0; j < nfft; j++) {
 	    if (j <= nfft / 2)
 	    {
 		float loslope = (fftfreqs[j] - fs[0]) / (fs[1] - fs[0]);
 		float hislope = (fs[2] - fftfreqs[j]) / (fs[2] - fs[1]);
 		matrix[i * nfft + j] = MAX(0, MIN(hislope, loslope));
+		if (constamp == 0)
+		{
+		    matrix[i * nfft + j] = scale_factor * matrix[i * nfft + j];
+		}
 	    }
 	    else
 	    {
