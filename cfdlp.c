@@ -519,6 +519,10 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, float *wts, int *indices, int 
 {
     double *y = (double *) MALLOC(N*sizeof(double));
 
+    // DEBUG
+    //static int framenum = 0;
+    //framenum++;
+
     for ( int n = 0; n < N; n++ )
     {
 	y[n] = (double) x[n];
@@ -564,11 +568,33 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, float *wts, int *indices, int 
 		y_filt[n] = 0;
 	    }
 	}
+
+	// DEBUG
+	//char outname[512];
+	//sprintf(outname, "filtered_window_frame-%d_band-%d.txt", framenum, i);
+	//FILE *fd = fopen(outname, "w");
+	//for (int v = 0; v < Nsub; v++) {
+	//    fprintf(fd, "%g ", y_filt[v]);
+	//}
+	//fclose(fd);
+
 	lpc(y_filt,Nsub,*Np,1,p+i*(*Np+1));
     }
 
     FREE(y_filt);
     FREE(y);
+
+    // DEBUG
+    //char outname[512];
+    //sprintf(outname, "poles_frame-%d.txt", framenum);
+    //FILE *fd = fopen(outname, "w");
+    //for (int i = 0; i < nbands; i++) {
+    //    for (int j = 0; j < (*Np+1); j++) {
+    //        fprintf(fd, "%g ", p[i * (*Np+1) + j]);
+    //    }
+    //    fprintf(fd, "\n");
+    //}
+    //fclose(fd);
 
     return p;
 }
@@ -847,27 +873,30 @@ void audspec(float **bands, int *nbands, int nframes)
 	} else {
 	    fatal("Something went terribly wrong. Trying to convert linear to other band decomposition without having a linear decomp in the first place?.\n");
 	}
-	fprintf(stderr, "Just created the fft2decompm matrix, printing out into file fft2decompm.ascii\n");
-	FILE *fft2decompfile = fopen("fft2decompm.ascii", "w");
-	for (int i = 0; i < nfilts; i++) {
-	    for (int j = 0; j < nfft; j++) {
-		fprintf(fft2decompfile, "%g ", fft2decompm[i * nfft + j]);
-	    }
-	    fprintf(fft2decompfile, "\n");
-	}
-	fclose(fft2decompfile);
-	fprintf(stderr, "Done.\n");
+	
+	// DEBUG
+	//fprintf(stderr, "Just created the fft2decompm matrix, printing out into file fft2decompm.txt\n");
+	//FILE *fft2decompfile = fopen("fft2decompm.txt", "w");
+	//for (int i = 0; i < nfilts; i++) {
+	//    for (int j = 0; j < nfft; j++) {
+	//	fprintf(fft2decompfile, "%g ", fft2decompm[i * nfft + j]);
+	//    }
+	//    fprintf(fft2decompfile, "\n");
+	//}
+	//fclose(fft2decompfile);
+	//fprintf(stderr, "Done.\n");
     }
 
 //    fprintf(stderr, "Printing out energybands matrix before multiplication into energybands.ascii.\n");
-//    FILE *ebandsfile = fopen("energybands.ascii", "w");
-//    for (int i = 0; i < *nbands; i++) {
-//	for (int fr = 0; fr < nframes; fr++) {
-//	    fprintf(ebandsfile, "%g ", energybands[fr * (*nbands) + i]);
-//	}
-//	fprintf(ebandsfile, "\n");
-//    }
-//    fclose(ebandsfile);
+    // DEBUG
+    //FILE *ebandsfile = fopen("energybands.txt", "w");
+    //for (int i = 0; i < *nbands; i++) {
+    //    for (int fr = 0; fr < nframes; fr++) {
+    //        fprintf(ebandsfile, "%g ", energybands[fr * (*nbands) + i]);
+    //    }
+    //    fprintf(ebandsfile, "\n");
+    //}
+    //fclose(ebandsfile);
 //    fprintf(stderr, "Done.\n");
 
     float *new_bands = (float *) MALLOC (nfilts * nframes * sizeof(float));
@@ -886,14 +915,15 @@ void audspec(float **bands, int *nbands, int nframes)
     }
 
 //    fprintf(stderr, "Printing out newbands after multiplication into newbands.ascii\n");
-//    FILE *nbandsfile = fopen("newbands.ascii", "w");
-//    for (int i = 0; i < nfilts; i++) {
-//	for (int f = 0; f < nframes; f++) {
-//	    fprintf(nbandsfile, "%g ", new_bands[f * nfilts + i]);
-//	}
-//	fprintf(nbandsfile, "\n");
-//    }
-//    fclose(nbandsfile);
+    // DEBUG
+    //FILE *nbandsfile = fopen("newbands.txt", "w");
+    //for (int i = 0; i < nfilts; i++) {
+    //    for (int f = 0; f < nframes; f++) {
+    //        fprintf(nbandsfile, "%g ", new_bands[f * nfilts + i]);
+    //    }
+    //    fprintf(nbandsfile, "\n");
+    //}
+    //fclose(nbandsfile);
 //    fprintf(stderr, "Done.\n");
 
 //    for (int f = 0; f < nframes; f++)
@@ -944,9 +974,24 @@ void compute_fdlp_feats( short *x, int N, int Fs, int nbands, int nceps, float *
     int nframes;
     float *hamm = hamming(flen);  // Defining the Hamming window
     float *energybands = (float *) MALLOC(fnum*nbands*sizeof(float)) ; //Energy of features	
+
+    // DEBUG
+    //static int framenum = 0;
+    //framenum++;
+
     for (int i = 0; i < nbands; i++ )
     {
 	float *env = fdlpenv_mod(p+i*(Np+1), Np, fdlplen);
+
+	// DEBUG
+	//char outname[512];
+	//sprintf(outname, "envelope_frame-%d_band-%d.txt", framenum, i);
+	//FILE *fd = fopen(outname, "w");
+	//for (int v = 0; v < fdlplen; v++) {
+	//    fprintf(fd, "%g ", env[v]);
+	//}
+	//fclose(fd);
+
 	if (do_spec)
 	{
 	    float *frames = fconstruct_frames(&env, &send, flen, flen-fhop, &nframes);
@@ -1103,10 +1148,27 @@ int main(int argc, char **argv)
     int fnum = floor(((float)N-fwin)/fstep)+1;
     N = (fnum-1)*fstep + fwin;
 
+    // DEBUG
+    //FILE *fd = fopen("speech_signal.txt", "w");
+    //for (int i = 0; i < N; i++) {
+    //    fprintf(fd, "%d ", signal[i]);
+    //}
+    //fclose(fd);
+
     int fdlpwin = 200*fwin;
     int fdlpolap = 0.020*Fs;  
     int nframes;
     short *frames = sconstruct_frames(&signal, &N, fdlpwin, fdlpolap, &nframes); 
+
+    // DEBUG
+    //fd = fopen("speech_frames.txt", "w");
+    //for (int i = 0; i < nframes; i++) {
+    //    for (int j = 0; j < fdlpwin; j++) {
+    //        fprintf(fd, "%d ", frames[i * fdlpwin + j]);
+    //    }
+    //    fprintf(fd, "\n");
+    //}
+    //fclose(fd);
 
     // Construct the auditory filterbank
     float nyqbar;
@@ -1144,6 +1206,16 @@ int main(int argc, char **argv)
 	    linweights(fdlpwin, Fs, dB, &wts, &indices, &nbands);
 	    break;
     }
+
+    // DEBUG
+    //fd = fopen("auditory_filterbank.txt", "w");
+    //for (int i = 0; i < nbands; i++) {
+    //    for (int j = 0; j < fdlpwin; j++) {
+    //        fprintf(fd, "%g ", wts[i * fdlpwin + j]);
+    //    }
+    //    fprintf(fd, "\n");
+    //}
+    //fclose(fd);
 
     fprintf(stderr, "Number of sub-bands = %d\n",nbands);	
     // Compute the feature vector time series
