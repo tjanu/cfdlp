@@ -1058,6 +1058,7 @@ void compute_fdlp_feats( short *x, int N, int Fs, int nbands, int nceps, float *
 	    FREE(env);
 	}
     }
+
     if (do_spec)
     {
 	if (axis == AXIS_LINEAR_MEL || axis == AXIS_LINEAR_BARK) {
