@@ -12,6 +12,13 @@
 # define pi 3.14159265
 void adapt_m(float * in, int N, float fsample, float * out);
 
+/* 0 --> computing fdlpenv the fast way (directly choosing the required number
+ * of fft points
+ * 1 --> computing fdlpenv the slow way (rounding number of fft points to next
+ * power of 2, interpolating for final envelope
+ */
+#define FDLPENV_WITH_INTERP 0
+
 #define AXIS_BARK 0
 #define AXIS_MEL 1
 #define AXIS_LINEAR_MEL 2
@@ -599,6 +606,41 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, float *wts, int *indices, int 
     return p;
 }
 
+float * fdlpenv( float *p, int Np, int N )
+{
+    float *env = (float *) MALLOC( N*sizeof(float) );
+
+    int nfft = 2 * (MAX(Np, N) - 1); // --> N = nfft / 2 + 1 == half (fft is symmetric)
+    double *Y = (double *) MALLOC( nfft*sizeof(double) );
+    for ( int n = 0; n < nfft; n++ )
+    {
+	if ( n <= Np )
+	{
+	    Y[n] = p[n];
+	}
+	else
+	{
+	    Y[n] = 0;
+	}
+    }   
+
+    complex *X = (complex *) MALLOC( nfft*sizeof(complex) );
+    fftw_plan plan = fftw_plan_dft_r2c_1d(nfft, Y, X, FFTW_ESTIMATE);
+    fftw_execute(plan);
+    fftw_destroy_plan(plan);
+
+    for ( int n = 0; n < N; n++ )
+    {
+	X[n] = 1.0/X[n];
+	env[n] = 2*X[n]*conj(X[n]);
+    }
+
+    FREE(X);
+    FREE(Y);
+
+    return env;
+}
+
 float * fdlpenv_mod( float *p, int Np, int N )
 {
     float *env = (float *) MALLOC( N*sizeof(float) );
@@ -988,7 +1030,11 @@ void compute_fdlp_feats( short *x, int N, int Fs, int nbands, int nceps, float *
 
     for (int i = 0; i < nbands; i++ )
     {
+#if FDLPENV_WITH_INTERP == 1
 	float *env = fdlpenv_mod(p+i*(Np+1), Np, fdlplen);
+#else
+	float *env = fdlpenv(p+i*(Np+1), Np, fdlplen);
+#endif
 
 	// DEBUG
 	//char outname[512];
