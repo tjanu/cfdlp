@@ -212,8 +212,8 @@ float *fconstruct_frames( float **x, int *N, int width, int overlap, int *nframe
     return frames;
 }
 
-// Function to implement Hamming Window
-float * hamming(int N)
+// Function to implement generalized hamming window
+float * general_hamming(int N, float alpha)
 {
     int half; 
     float temp;
@@ -229,7 +229,7 @@ float * hamming(int N)
 	if (i <= half -1)
 	{
 	    temp = ((float) i)/(N-1);
-	    x[i] = 0.54 - 0.46*cos(2*pi*temp);
+	    x[i] = alpha - (1 - alpha)*cos(2*pi*temp);
 	}
 	else
 	{
@@ -238,6 +238,18 @@ float * hamming(int N)
     }
 
     return x;
+}
+
+// Function to implement the hanning window
+float * hanning(int N)
+{
+    return general_hamming(N, 0.5);
+}
+
+// Function to implement Hamming Window
+float * hamming(int N)
+{
+    return general_hamming(N, 0.54);
 }
 
 // function for implementing deltas
