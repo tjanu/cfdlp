@@ -604,23 +604,6 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 
     if (wts == NULL) {
 	// Construct the auditory filterbank
-	float nyqbar;
-	switch (axis)
-	{
-	    case AXIS_MEL:
-		nyqbar = hz2mel(Fs/2);
-		nbands = ceil(nyqbar)+1;
-		break;
-	    case AXIS_BARK:
-		nyqbar = hz2bark(Fs/2);
-		nbands = ceil(nyqbar)+1;
-		break;
-	    case AXIS_LINEAR_MEL:
-	    case AXIS_LINEAR_BARK:
-		nyqbar = Fs/2;
-		nbands = MIN(96, (int)round((float)N/100.)); // TODO really N or auditory_win_length?
-		break;
-	}
 
 	float dB = 48;
 	wts = (float *) MALLOC(nbands*auditory_win_length*sizeof(float));
