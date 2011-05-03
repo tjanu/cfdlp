@@ -45,7 +45,7 @@ int limit_range = 0;
 
 void usage()
 {
-    fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n -limit-range <flag> - Limit DCT-spectrum to 125-3800Hz before FDPLP processing\n");
+    fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n -limit-range <flag> - Limit DCT-spectrum to 125-3800Hz before FDPLP processing (0)\n");
 }
 
 void parse_args(int argc, char **argv)
@@ -105,7 +105,7 @@ void parse_args(int argc, char **argv)
 	{
 	    specgrm = atoi(argv[++i]); if (specgrm) do_spec = 1;
 	}
-	else if ( strcmp(argv[i], "-limit-spectrum") == 0 )
+	else if ( strcmp(argv[i], "-limit-range") == 0 )
 	{
 	    limit_range = atoi(argv[++i]);
 	}
