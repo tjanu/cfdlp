@@ -544,8 +544,115 @@ void lpc( double *y, int len, int order, int compr, float *poles )
     FREE(Y);
 }
 
+int *check_VAD(short *x, int N, int Fs, int *Nindices)
+{
+    int NB_FRAME_THRESHOLD_LTE = 10;
+    float LAMBDA_LTE = 0.97;
+    //int M = 80;
+    int SNR_THRESHOLD_UPD_LTE = 20;
+    int ENERGY_FLOOR = 80;
+    int MIN_FRAME = 10;
+    float lambdaLTEhigherE = 0.99;
+    int SNR_THRESHOLD_VAD = 15;
+    int MIN_SPEECH_FRAME_HANGOVER = 4;
+    int HANGOVER = 15;
+
+    // initialization
+    int nbSpeechFrame = 0;
+    float meanEN = 0.;
+    int hangOver = 0;
+
+    // frame signal inte 25ms frames with 10ms shift
+    int flen = 0.025 * Fs;
+    float *w = hanning(flen);
+    float SP = 0.4;
+
+    short *copy = MALLOC(sizeof(short) * N);
+    memcpy(copy, x, sizeof(short) * N);
+    int Ncopy = N;
+    int Nframes = 0;
+    short *x_fr = sconstruct_frames(&copy, &Ncopy, flen, round((float)flen * SP), &Nframes);
+    for (int f = 0; f < Nframes; f++)
+    {
+	for (int n = 0; n < flen; n++)
+	{
+	    x_fr[f * flen + n] *= w[n];
+	}
+    }
+
+    int *flag_VAD = MALLOC(sizeof(int) * Nframes);
+    memset(flag_VAD, 0, sizeof(int)*Nframes);
+
+    int *indices = MALLOC(sizeof(int) * Nframes);
+    *Nindices = 0;
+
+    for (int t = 0; t < Nframes; t++)
+    {
+	short *x_cur = x_fr + t * flen;
+	float lambdaLTE = LAMBDA_LTE;
+	if (t < NB_FRAME_THRESHOLD_LTE)
+	{
+	    lambdaLTE = 1. - (1. / (float)t);
+	}
+	float sum = 0.;
+	for (int i = flen - 80; i < flen; i++)
+	{
+	    sum += x_cur[i] * x_cur[i];
+	}
+	float frameEN = 0.5 + 16 / (log(2)) * (log((64 + sum) / 64.));
+	if ((frameEN - meanEN) < SNR_THRESHOLD_UPD_LTE || t < MIN_FRAME)
+	{
+	    if (frameEN < meanEN || t < MIN_FRAME)
+	    {
+		meanEN = meanEN + (1 - lambdaLTE) * (frameEN - meanEN);
+	    }
+	    else
+	    {
+		meanEN = meanEN + (1 - lambdaLTEhigherE) * (frameEN - meanEN);
+	    }
+	    if (meanEN < ENERGY_FLOOR)
+	    {
+		meanEN = ENERGY_FLOOR;
+	    }
+	}
+	if (t > 4)
+	{
+	    if (frameEN - meanEN > SNR_THRESHOLD_VAD)
+	    {
+		flag_VAD[t] = 1;
+		nbSpeechFrame++;
+		indices[(*Nindices)++] = t;
+	    }
+	    else
+	    {
+		if (nbSpeechFrame > MIN_SPEECH_FRAME_HANGOVER)
+		{
+		    hangOver = HANGOVER;
+		}
+		nbSpeechFrame = 0;
+		if (hangOver != 0)
+		{
+		    hangOver--;
+		    flag_VAD[t] = 1;
+		    indices[(*Nindices)++] = t;
+		}
+		else
+		{
+		    flag_VAD[t] = 0;
+		}
+	    }
+	}
+    }
+
+    FREE(copy);
+    FREE(flag_VAD);
+    return indices;
+}
+
 float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 {
+    int NNIS = 0;
+    int* NIS = check_VAD(x, N, Fs, &NNIS);
     double *y = (double *) MALLOC(N*sizeof(double));
 
     // DEBUG
