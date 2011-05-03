@@ -551,6 +551,136 @@ void lpc( double *y, int len, int order, int compr, float *poles )
 
 void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int *vadindices, int Nindices)
 {
+    int wlen = round(0.025 * Fs);
+    float SP = 0.4;
+    float alpha = 0.9;
+
+    int N = 2 * orig_len - 1;
+    double *Y = (double *)MALLOC(N * sizeof(double));
+    for (int n = 0; n < N; n++)
+    {
+	if (n <= len)
+	{
+	    Y[n] = y[n];
+	}
+	else
+	{
+	    Y[n] = 0.;
+	}
+    }
+    complex *ENV_cmplx = (complex *)MALLOC(N * sizeof(complex));
+    fftw_plan plan = fftw_plan_dft_r2c_1d(N, Y, ENV_cmplx, FFTW_ESTIMATE);
+    fftw_execute(plan);
+    fftw_destroy_plan(plan);
+    float *ENV = (float *) MALLOC(orig_len * sizeof(float));
+    for (int i = 0; i < orig_len; i++)
+    {
+	ENV[i] = (float)cabs(ENV_cmplx[i]) * (float)cabs(ENV_cmplx[i]);
+    }
+
+    int envlen = orig_len;
+    int envframes = 0;
+    float *fftframes = fconstruct_frames(&ENV, &envlen, wlen, wlen - wlen * SP, &envframes);
+
+    float *Pn = (float *)MALLOC(envframes * sizeof(float));
+    float *X = (float *)MALLOC(envframes * wlen * sizeof(float));
+    float *G = (float *)MALLOC(envframes * wlen * sizeof(float));
+    float *zeta = (float *)MALLOC(envframes * wlen * sizeof(float));
+    float *gamma = (float *)MALLOC(envframes * wlen * sizeof(float));
+
+    for (int f = 0; f < envframes; f++)
+    {
+	Pn[f] = 0.;
+	for (int i = 0; i < Nindices; i++)
+	{
+	    Pn[f] += fftframes[f * wlen + i];
+	}
+	Pn[f] /= Nindices;
+
+	for (int i = 0; i < wlen; i++)
+	{
+	    gamma[f * wlen + i] = fftframes[f * wlen + i] / Pn[f];
+	    if (f > 1)
+	    {
+		zeta[f * wlen + i] = alpha * X[(f-1) * wlen + i] / Pn[f] + (1 - alpha) * (gamma[f * wlen + i] - 1);
+	    }
+	    else
+	    {
+		zeta[f * wlen + i] = (1-alpha) * (gamma[f * wlen + i] - 1);
+	    }
+	    G[f * wlen + i] = zeta[f * wlen + i] / (1 + zeta[f * wlen + i]); // Wiener filter gain
+	    X[f * wlen + i] = G[f * wlen + i] * G[f * wlen + i] * fftframes[f * wlen + i]; // obtain clean value
+	}
+    }
+
+    // reconstruct "signal"
+    int shiftwidth = (int)(wlen - wlen * SP);
+    int siglen = (envframes - 1) * shiftwidth + wlen;
+    float *ENV_output = (float *)MALLOC(siglen * sizeof(float));
+    float *inv_win = (float *)MALLOC(siglen * sizeof(float));
+    for (int i = 0; i < envframes; i++)
+    {
+	int start = i * shiftwidth;
+	float *x = X + i * wlen;
+	for (int j = start; j < start + wlen; j++) {
+	    ENV_output[j] += x[j-start];
+	    inv_win[j] += 1;
+	}
+    }
+    if (orig_len > siglen)
+    {
+	for (int i = 0; i < orig_len; i++)
+	{
+	    if (i < siglen)
+	    {
+		ENV_output[i] /= inv_win[i];
+	    }
+	    else
+	    {
+		ENV_output[i] = ENV[i];
+	    }
+	}
+    }
+
+    complex *ENV_cmplx_op = (complex *)MALLOC(N * sizeof(complex));
+    for (int i = 0; i < N; i++) {
+	int env_output_index = 0;
+	if (i < orig_len)
+	{
+	    env_output_index = i;
+	}
+	else
+	{
+	    env_output_index = N - i;
+	}
+	ENV_cmplx_op[i] = ENV_output[env_output_index] / len;
+    }
+
+    double *R = (double *)MALLOC(N * sizeof(double));
+
+    plan = fftw_plan_dft_c2r_1d(N, ENV_cmplx_op, R, FFTW_ESTIMATE);
+    fftw_execute(plan);
+    fftw_destroy_plan(plan);
+    for ( int n = 0; n < N; n++ )
+    {
+	R[n] /= N;
+    }
+
+    levinson(order, R, poles);
+
+    FREE(Y);
+    FREE(ENV_cmplx);
+    FREE(ENV);
+    FREE(fftframes);
+    FREE(Pn);
+    FREE(X);
+    FREE(G);
+    FREE(zeta);
+    FREE(gamma);
+    FREE(ENV_output);
+    FREE(inv_win);
+    FREE(ENV_cmplx_op);
+    FREE(R);
 }
 
 int *check_VAD(short *x, int N, int Fs, int *Nindices)
