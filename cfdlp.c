@@ -580,7 +580,7 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
     memcpy(copy, x, sizeof(short) * N);
     int Ncopy = N;
     int Nframes = 0;
-    short *x_fr = sconstruct_frames(&copy, &Ncopy, flen, round((float)flen * SP), &Nframes);
+    short *x_fr = sconstruct_frames(&copy, &Ncopy, flen, flen - (int)round((float)flen * SP), &Nframes);
     for (int f = 0; f < Nframes; f++)
     {
 	for (int n = 0; n < flen; n++)
@@ -630,7 +630,6 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
 	    {
 		flag_VAD[t] = 1;
 		nbSpeechFrame++;
-		indices[(*Nindices)++] = t;
 	    }
 	    else
 	    {
@@ -643,16 +642,23 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
 		{
 		    hangOver--;
 		    flag_VAD[t] = 1;
-		    indices[(*Nindices)++] = t;
 		}
 		else
 		{
 		    flag_VAD[t] = 0;
+		    indices[(*Nindices)++] = t;
 		}
 	    }
 	}
+	else
+	{
+	    flag_VAD[t] = 0;
+	    indices[(*Nindices)++] = t;
+	}
     }
 
+    FREE(w);
+    FREE(x_fr);
     FREE(copy);
     FREE(flag_VAD);
     return indices;
