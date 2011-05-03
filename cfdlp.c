@@ -41,11 +41,11 @@ int *indices = NULL;
 int nbands = 0;
 int auditory_win_length = 0;
 
-int limit_spectrum = 0;
+int limit_range = 0;
 
 void usage()
 {
-    fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n -limit-spectrum <flag> - Limit DCT-spectrum to 125-3800Hz before FDPLP processing\n");
+    fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n -limit-range <flag> - Limit DCT-spectrum to 125-3800Hz before FDPLP processing\n");
 }
 
 void parse_args(int argc, char **argv)
@@ -107,7 +107,7 @@ void parse_args(int argc, char **argv)
 	}
 	else if ( strcmp(argv[i], "-limit-spectrum") == 0 )
 	{
-	    limit_spectrum = atoi(argv[++i]);
+	    limit_range = atoi(argv[++i]);
 	}
 	else
 	{
@@ -557,7 +557,7 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
     int fdlpwin = N;
 
     float *orig_y = y;
-    if (limit_spectrum)
+    if (limit_range)
     {
 	float lo_freq = 125.;
 	float hi_freq = 3800.;
@@ -1307,7 +1307,7 @@ int main(int argc, char **argv)
 
     fprintf(stderr, "Input file = %s; N = %d samples\n", infile, N);
     fprintf(stderr, "Gain Norm %d \n",do_gain_norm);
-    fprintf(stderr, "Limit Spectrum: %d\n", limit_spectrum);
+    fprintf(stderr, "Limit DCT range: %d\n", limit_range);
 
     int fwin = 0.025*Fs;
     int fstep = 0.010*Fs; 
