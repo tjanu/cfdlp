@@ -36,6 +36,10 @@ float *LOOKUP_TABLE = NULL;
 int nbits_log = 14;
 int specgrm = 0;
 float *fft2decompm = NULL;
+float *wts = NULL;
+int *indices = NULL;
+int nbands = 0;
+int auditory_win_length = 0;
 
 void usage()
 {
@@ -522,7 +526,7 @@ void lpc( double *y, int len, int order, int compr, float *poles )
     FREE(Y);
 }
 
-float * fdlpfit_full_sig(short *x, int N, int Fs, float *wts, int *indices, int nbands, int *Np)
+float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 {
     double *y = (double *) MALLOC(N*sizeof(double));
 
@@ -544,6 +548,90 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, float *wts, int *indices, int 
     }
     y[0] /= sqrt(2);
 
+    int fdlpwin = N;
+
+    float nyqbar;
+    int numbands = 0;
+    switch (axis)
+    {
+	case AXIS_MEL:
+	    nyqbar = hz2mel(Fs/2);
+	    numbands = ceil(nyqbar)+1;
+	    break;
+	case AXIS_BARK:
+	    nyqbar = hz2bark(Fs/2);
+	    numbands = ceil(nyqbar)+1;
+	    break;
+	case AXIS_LINEAR_MEL:
+	case AXIS_LINEAR_BARK:
+	    nyqbar = Fs/2;
+	    numbands = MIN(96, (int)round((float)N/100.)); // TODO really N or fdlpwin?
+	    break;
+    }
+
+    if (numbands != nbands || fdlpwin != auditory_win_length) {
+	fprintf(stderr, "(Re)creating auditory filter bank (nbands or fdlpwin changed)\n");
+	if (wts != NULL) {
+	    FREE(wts);
+	    wts = NULL;
+	}
+	if (indices != NULL) {
+	    FREE(indices);
+	    indices = NULL;
+	}
+	nbands = numbands;
+	auditory_win_length = fdlpwin;
+    }
+
+    if (wts == NULL) {
+	// Construct the auditory filterbank
+	float nyqbar;
+	switch (axis)
+	{
+	    case AXIS_MEL:
+		nyqbar = hz2mel(Fs/2);
+		nbands = ceil(nyqbar)+1;
+		break;
+	    case AXIS_BARK:
+		nyqbar = hz2bark(Fs/2);
+		nbands = ceil(nyqbar)+1;
+		break;
+	    case AXIS_LINEAR_MEL:
+	    case AXIS_LINEAR_BARK:
+		nyqbar = Fs/2;
+		nbands = MIN(96, (int)round((float)N/100.)); // TODO really N or auditory_win_length?
+		break;
+	}
+
+	float dB = 48;
+	wts = (float *) MALLOC(nbands*auditory_win_length*sizeof(float));
+	indices = (int *) MALLOC(nbands*2*sizeof(int));
+	switch (axis)
+	{
+	    case AXIS_MEL:
+		melweights(auditory_win_length, Fs, dB, wts, indices, &nbands);
+		break;
+	    case AXIS_BARK:
+		barkweights(auditory_win_length, Fs, dB, wts, indices, &nbands);
+		break;
+	    case AXIS_LINEAR_MEL:
+	    case AXIS_LINEAR_BARK:
+		linweights(auditory_win_length, Fs, dB, &wts, &indices, &nbands);
+		break;
+	}
+
+	// DEBUG
+	//fd = fopen("auditory_filterbank.txt", "w");
+	//for (int i = 0; i < nbands; i++) {
+	//    for (int j = 0; j < fdlpwin; j++) {
+	//        fprintf(fd, "%g ", wts[i * fdlpwin + j]);
+	//    }
+	//    fprintf(fd, "\n");
+	//}
+	//fclose(fd);
+    }
+
+    fprintf(stderr, "Number of sub-bands = %d\n", nbands);	
     switch (axis)
     {
 	case AXIS_MEL:
@@ -995,7 +1083,7 @@ void audspec(float **bands, int *nbands, int nframes)
     *nbands = nfilts;
 }
 
-void compute_fdlp_feats( short *x, int N, int Fs, int nbands, int nceps, float *wts, int *indices, float *feats )
+void compute_fdlp_feats( short *x, int N, int Fs, int nceps, float **feats, int nfeatfr, int numframes, int *dim)
 {
     int flen=0.025*Fs;   // frame length corresponding to 25ms
     int fhop=0.010*Fs;   // frame overlap corresponding to 10ms
@@ -1010,7 +1098,7 @@ void compute_fdlp_feats( short *x, int N, int Fs, int nbands, int nceps, float *
     int fdlpolap = fdlpwin - fhop;
 
     int Np;
-    float *p = fdlpfit_full_sig(x,fdlplen,Fs,wts,indices,nbands,&Np);
+    float *p = fdlpfit_full_sig(x,fdlplen,Fs,&Np);
 
     int Npad1 = send+2*mirr_len;
     float *env_pad1 = (float *) MALLOC(Npad1*sizeof(float));
@@ -1023,6 +1111,29 @@ void compute_fdlp_feats( short *x, int N, int Fs, int nbands, int nceps, float *
     int nframes;
     float *hamm = hamming(flen);  // Defining the Hamming window
     float *energybands = (float *) MALLOC(fnum*nbands*sizeof(float)) ; //Energy of features	
+
+    if (*feats == NULL)
+    { // Here we know nbands, finally, and since feats is NULL we are on the first frame
+
+	*dim = nbands*nceps*2;
+	if (do_spec)
+	{
+	    if (specgrm) 
+	    {
+		*dim = nbands;
+		do_spec = 1;
+		nceps=nbands;
+	    }
+	    else
+	    {
+		nceps=13; 
+		*dim = nceps*3;
+	    } 
+	}
+
+	*feats = (float *)MALLOC(nfeatfr * numframes * (*dim) * sizeof(float));
+	fprintf(stderr, "Parameters: (nframes=%d,  dim=%d)\n", numframes, *dim); 
+    }
 
     // DEBUG
     //static int framenum = 0;
@@ -1061,7 +1172,7 @@ void compute_fdlp_feats( short *x, int N, int Fs, int nbands, int nceps, float *
 
 		if (specgrm)
 		{
-		    feats[fr*nbands+i] = 0.33*log(temp);
+		    (*feats)[fr*nbands+i] = 0.33*log(temp);
 		}
 	    }
 	    FREE(frames);
@@ -1099,7 +1210,7 @@ void compute_fdlp_feats( short *x, int N, int Fs, int nbands, int nceps, float *
 
 	    float * frames = fconstruct_frames(&env_pad1, &Npad1, fdlpwin, fdlpolap, &nframes);
 
-	    spec2cep(frames, fdlpwin, nframes, nceps, nbands, i, 0, feats, 1 );
+	    spec2cep(frames, fdlpwin, nframes, nceps, nbands, i, 0, *feats, 1 );
 
 	    FREE(frames);
 
@@ -1150,7 +1261,7 @@ void compute_fdlp_feats( short *x, int N, int Fs, int nbands, int nceps, float *
 
 	    frames = fconstruct_frames(&env_pad1, &Npad1, fdlpwin, fdlpolap, &nframes);
 
-	    spec2cep(frames, fdlpwin, nframes, nceps, nbands, i, nceps, feats, 1);  
+	    spec2cep(frames, fdlpwin, nframes, nceps, nbands, i, nceps, *feats, 1);  
 
 	    FREE(frames);
 	    FREE(env);
@@ -1168,7 +1279,7 @@ void compute_fdlp_feats( short *x, int N, int Fs, int nbands, int nceps, float *
 	}
 	else
 	{
-	    spec2cep4energy(energybands, nbands, nframes, nceps, feats, 0);
+	    spec2cep4energy(energybands, nbands, nframes, nceps, *feats, 0);
 	}
     }
 
@@ -1223,74 +1334,14 @@ int main(int argc, char **argv)
     //}
     //fclose(fd);
 
-    // Construct the auditory filterbank
-    float nyqbar;
-    int nbands = 0;
-    switch (axis)
-    {
-	case AXIS_MEL:
-	    nyqbar = hz2mel(Fs/2);
-	    nbands = ceil(nyqbar)+1;
-	    break;
-	case AXIS_BARK:
-	    nyqbar = hz2bark(Fs/2);
-	    nbands = ceil(nyqbar)+1;
-	    break;
-	case AXIS_LINEAR_MEL:
-	case AXIS_LINEAR_BARK:
-	    nyqbar = Fs/2;
-	    nbands = MIN(96, (int)round((float)N/100.));
-	    break;
-    }
-
-    float dB = 48;
-    float *wts = (float *) MALLOC(nbands*fdlpwin*sizeof(float));
-    int *indices = (int *) MALLOC(nbands*2*sizeof(int));
-    switch (axis)
-    {
-	case AXIS_MEL:
-	    melweights(fdlpwin, Fs, dB, wts, indices, &nbands);
-	    break;
-	case AXIS_BARK:
-	    barkweights(fdlpwin, Fs, dB, wts, indices, &nbands);
-	    break;
-	case AXIS_LINEAR_MEL:
-	case AXIS_LINEAR_BARK:
-	    linweights(fdlpwin, Fs, dB, &wts, &indices, &nbands);
-	    break;
-    }
-
-    // DEBUG
-    //fd = fopen("auditory_filterbank.txt", "w");
-    //for (int i = 0; i < nbands; i++) {
-    //    for (int j = 0; j < fdlpwin; j++) {
-    //        fprintf(fd, "%g ", wts[i * fdlpwin + j]);
-    //    }
-    //    fprintf(fd, "\n");
-    //}
-    //fclose(fd);
-
-    fprintf(stderr, "Number of sub-bands = %d\n",nbands);	
     // Compute the feature vector time series
     int nceps = 14;
     int nfeatfr = 498; 
-    int dim = nbands*nceps*2;
-    if (do_spec)
-    {
-	if (specgrm) 
-	{
-	    dim = nbands;
-	    do_spec = 1;
-	    nceps=nbands;
-	}
-	else
-	{
-	    nceps=13; 
-	    dim = nceps*3;
-	} 
-    }
-    float *feats = (float *) MALLOC(nfeatfr*nframes*dim*sizeof(float));
-    fprintf(stderr, "Parameters: (nframes=%d,  dim=%d)\n", nframes, dim); 
+    int dim = 0;
+
+//    float *feats = (float *) MALLOC(nfeatfr*nframes*dim*sizeof(float));
+    float *feats = NULL;
+
     tic();
     for ( int f = 0; f < nframes; f++ )
     {
@@ -1298,7 +1349,7 @@ int main(int argc, char **argv)
 	sdither( xwin, fdlpwin, 1 );
 	sub_mean( xwin, fdlpwin );
 
-	compute_fdlp_feats( xwin, fdlpwin, Fs, nbands, nceps, wts, indices, feats + f*nfeatfr*dim );
+	compute_fdlp_feats( xwin, fdlpwin, Fs, nceps, &feats + f * nfeatfr * dim, nfeatfr, nframes, &dim );
 	printf("\n"); 
 
 	fprintf(stderr, "%f s\n",toc());
