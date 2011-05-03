@@ -41,9 +41,11 @@ int *indices = NULL;
 int nbands = 0;
 int auditory_win_length = 0;
 
+int limit_spectrum = 0;
+
 void usage()
 {
-    fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n");
+    fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n -limit-spectrum <flag> - Limit DCT-spectrum to 125-3800Hz before FDPLP processing\n");
 }
 
 void parse_args(int argc, char **argv)
@@ -102,6 +104,10 @@ void parse_args(int argc, char **argv)
 	else if ( strcmp(argv[i], "-specgram") == 0 )
 	{
 	    specgrm = atoi(argv[++i]); if (specgrm) do_spec = 1;
+	}
+	else if ( strcmp(argv[i], "-limit-spectrum") == 0 )
+	{
+	    limit_spectrum = atoi(argv[++i]);
 	}
 	else
 	{
@@ -550,6 +556,19 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 
     int fdlpwin = N;
 
+    float *orig_y = y;
+    if (limit_spectrum)
+    {
+	float lo_freq = 125.;
+	float hi_freq = 3800.;
+
+	int lo_offset = round(((float)N/((float)Fs/2.))*lo_freq);
+	int hi_offset = round(((float)N/((float)Fs/2))*hi_freq);
+
+	y = y + lo_offset;
+	fdlpwin = hi_offset - lo_offset + 1;
+    }
+
     float nyqbar;
     int numbands = 0;
     switch (axis)
@@ -648,15 +667,15 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
     float *p = (float *) MALLOC( (*Np+1)*nbands*sizeof(float) );
 
     // Time envelope estimation per band and per frame.
-    double *y_filt = (double *) MALLOC(N*sizeof(double));	 
+    double *y_filt = (double *) MALLOC(fdlpwin*sizeof(double));
     for ( int i = 0; i < nbands; i++ )
     {
 	int Nsub = indices[2*i+1]-indices[2*i]+1;
-	for ( int n = 0; n < N; n++ )
+	for ( int n = 0; n < fdlpwin; n++ )
 	{
 	    if ( n < Nsub )
 	    {
-		y_filt[n] = y[indices[2*i]+n] * wts[i*N+indices[2*i]+n];
+		y_filt[n] = y[indices[2*i]+n] * wts[i*fdlpwin+indices[2*i]+n];
 	    }
 	    else
 	    {
@@ -677,7 +696,7 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
     }
 
     FREE(y_filt);
-    FREE(y);
+    FREE(orig_y);
 
     // DEBUG
     //char outname[512];
@@ -1305,6 +1324,7 @@ int main(int argc, char **argv)
 
     fprintf(stderr, "Input file = %s; N = %d samples\n", infile, N);
     fprintf(stderr, "Gain Norm %d \n",do_gain_norm);
+    fprintf(stderr, "Limit Spectrum: %d\n", limit_spectrum);
 
     int fwin = 0.025*Fs;
     int fstep = 0.010*Fs; 
