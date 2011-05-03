@@ -42,10 +42,11 @@ int nbands = 0;
 int auditory_win_length = 0;
 
 int limit_range = 0;
+int do_wiener = 0;
 
 void usage()
 {
-    fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n -limit-range <flag> - Limit DCT-spectrum to 125-3800Hz before FDPLP processing (0)\n");
+    fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n -limit-range <flag> - Limit DCT-spectrum to 125-3800Hz before FDPLP processing (0)\n -apply-wiener <flag> - Apply Wiener filter (helps against additive noise) (0)");
 }
 
 void parse_args(int argc, char **argv)
@@ -108,6 +109,10 @@ void parse_args(int argc, char **argv)
 	else if ( strcmp(argv[i], "-limit-range") == 0 )
 	{
 	    limit_range = atoi(argv[++i]);
+	}
+	else if ( strcmp(argv[i], "-apply-wiener") == 0 )
+	{
+	    do_wiener = atoi(argv[++i]);
 	}
 	else
 	{
@@ -544,6 +549,10 @@ void lpc( double *y, int len, int order, int compr, float *poles )
     FREE(Y);
 }
 
+void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int *vadindices, int Nindices)
+{
+}
+
 int *check_VAD(short *x, int N, int Fs, int *Nindices)
 {
     int NB_FRAME_THRESHOLD_LTE = 10;
@@ -652,7 +661,11 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
 float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 {
     int NNIS = 0;
-    int* NIS = check_VAD(x, N, Fs, &NNIS);
+    int* NIS = NULL;
+    if (do_wiener)
+    {
+	NIS = check_VAD(x, N, Fs, &NNIS);
+    }
     double *y = (double *) MALLOC(N*sizeof(double));
 
     // DEBUG
@@ -794,11 +807,22 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 	//}
 	//fclose(fd);
 
-	lpc(y_filt,Nsub,*Np,1,p+i*(*Np+1));
+	if (do_wiener)
+	{
+	    hlpc_wiener(y_filt, Nsub, *Np, p+i*(*Np+1), N, NIS, NNIS);
+	}
+	else
+	{
+	    lpc(y_filt,Nsub,*Np,1,p+i*(*Np+1));
+	}
     }
 
     FREE(y_filt);
     FREE(orig_y);
+    if (NIS != NULL)
+    {
+	FREE(NIS);
+    }
 
     // DEBUG
     //char outname[512];
@@ -1427,6 +1451,7 @@ int main(int argc, char **argv)
     fprintf(stderr, "Input file = %s; N = %d samples\n", infile, N);
     fprintf(stderr, "Gain Norm %d \n",do_gain_norm);
     fprintf(stderr, "Limit DCT range: %d\n", limit_range);
+    fprintf(stderr, "Apply wiener filter: %d\n", do_wiener);
 
     int fwin = 0.025*Fs;
     int fstep = 0.010*Fs; 
