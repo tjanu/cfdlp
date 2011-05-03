@@ -584,7 +584,7 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 	case AXIS_LINEAR_MEL:
 	case AXIS_LINEAR_BARK:
 	    nyqbar = Fs/2;
-	    numbands = MIN(96, (int)round((float)N/100.)); // TODO really N or fdlpwin?
+	    numbands = MIN(96, (int)round((float)fdlpwin/100.));
 	    break;
     }
 
