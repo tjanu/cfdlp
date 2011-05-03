@@ -556,7 +556,7 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 
     int fdlpwin = N;
 
-    float *orig_y = y;
+    double *orig_y = y;
     if (limit_range)
     {
 	float lo_freq = 125.;
