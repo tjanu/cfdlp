@@ -40,6 +40,28 @@ Options -
 -axis bark uses a bark scale while computing sub-band energies (Default)
 -axis mel uses a mel wrapping 
 
+-----------
+Additions/Modifications by Thomas Janu <tjanu1@jhu.edu>
+
+-axis linear-mel uses a linear scale for computing the sub-band energies and
+	warps the final fdplp spectrum to mel scale before computing the final feature
+        vectors
+-axis linear-bark is like linear-mel, but warps the spectrum to bark scale
+  - both only work for short-term spectral features (-spec 1 necessary)
+
+-limit-range 1 limits the DCT spectrum to 125-3800Hz before computing the
+	FDPLP spectrum (which is done by e.g. IBM's MFCC calculator)
+-limit-range 0 leaves the DCT spectrum as-is (default)
+-apply-wiener 1 enables a simple VAD algorithm (energy-based) that is needed to
+	apply a wiener filter on the power spectrum of the band-limited DCT spectrum
+	used to obtain the autocorrelation coefficients needed for the LPC (so, the
+	wiener filter is applied per band). The Wiener filter applied at this
+	stage estimates the clean signal from the noisy signal in additive noise
+	scenarios. This is currently only possible for 8kHz-signals.
+-apply-wiener 0 disables the VAD and the Wiener filter (default)
+
+----------
+
 Example -
 ./cfdlp -i mgak0_sx406.raw -gn 1 -spec 1 -axis mel -o mgak0_sx406.fdlp -sr 16000
 
