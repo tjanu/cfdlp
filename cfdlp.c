@@ -40,13 +40,15 @@ float *wts = NULL;
 int *indices = NULL;
 int nbands = 0;
 int auditory_win_length = 0;
+int fdplp_win_len_sec = 5;
 
 int limit_range = 0;
 int do_wiener = 0;
+int truncate_last = 0;
 
 void usage()
 {
-    fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n -limit-range <flag> - Limit DCT-spectrum to 125-3800Hz before FDPLP processing (0)\n -apply-wiener <flag> - Apply Wiener filter (helps against additive noise) (0)");
+    fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n -limit-range <flag> - Limit DCT-spectrum to 125-3800Hz before FDPLP processing (0)\n -apply-wiener <flag> - Apply Wiener filter (helps against additive noise) (0)\n -fdplpwin <sec> - Length of FDPLP window in sec (better for reverberant environments when gain normalization is used: 10) (5)\n -truncate-last <flag> - truncate last frame if number of samples does not fill the entire fdplp window (speeds up computation but also changes numbers) (0)");
 }
 
 void parse_args(int argc, char **argv)
@@ -113,6 +115,14 @@ void parse_args(int argc, char **argv)
 	else if ( strcmp(argv[i], "-apply-wiener") == 0 )
 	{
 	    do_wiener = atoi(argv[++i]);
+	}
+	else if ( strcmp(argv[i], "-fdplpwin") == 0)
+	{
+	    fdplp_win_len_sec = atoi(argv[++i]);
+	}
+	else if ( strcmp(argv[i], "-truncate-last") == 0)
+	{
+	    truncate_last = atoi(argv[++i]);
 	}
 	else
 	{
@@ -1606,7 +1616,7 @@ int main(int argc, char **argv)
     //fclose(fd);
 
     //int fdlpwin = 200*fwin;
-    int fdlpwin = 400*fwin;
+    int fdlpwin = fdplp_win_len_sec * 40 * fwin;
     int fdlpolap = 0.020*Fs;  
     int nframes;
     short *frames = sconstruct_frames(&signal, &N, fdlpwin, fdlpolap, &nframes); 
@@ -1634,7 +1644,7 @@ int main(int argc, char **argv)
     for ( int f = 0; f < nframes; f++ )
     {
 	int local_size = fdlpwin;
-	if (Nsignal - f * fdlpwin < fdlpwin)
+	if (truncate_last && Nsignal - f * fdlpwin < fdlpwin)
 	{
 	    local_size = Nsignal - f * fdlpwin;
 	}
