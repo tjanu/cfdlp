@@ -1585,6 +1585,7 @@ int main(int argc, char **argv)
 
     int N;
     short *signal = readsignal_file(infile, &N);
+    int Nsignal = N;
 
     fprintf(stderr, "Input file = %s; N = %d samples\n", infile, N);
     fprintf(stderr, "Gain Norm %d \n",do_gain_norm);
@@ -1604,7 +1605,8 @@ int main(int argc, char **argv)
     //}
     //fclose(fd);
 
-    int fdlpwin = 200*fwin;
+    //int fdlpwin = 200*fwin;
+    int fdlpwin = 400*fwin;
     int fdlpolap = 0.020*Fs;  
     int nframes;
     short *frames = sconstruct_frames(&signal, &N, fdlpwin, fdlpolap, &nframes); 
@@ -1631,11 +1633,16 @@ int main(int argc, char **argv)
     tic();
     for ( int f = 0; f < nframes; f++ )
     {
+	int local_size = fdlpwin;
+	if (Nsignal - f * fdlpwin < fdlpwin)
+	{
+	    local_size = Nsignal - f * fdlpwin;
+	}
 	short *xwin = frames+f*fdlpwin;
-	sdither( xwin, fdlpwin, 1 );
-	sub_mean( xwin, fdlpwin );
+	sdither( xwin, local_size, 1 );
+	sub_mean( xwin, local_size );
 
-	compute_fdlp_feats( xwin, fdlpwin, Fs, nceps, &feats + f * nfeatfr * dim, nfeatfr, nframes, &dim );
+	compute_fdlp_feats( xwin, local_size, Fs, nceps, &feats + f * nfeatfr * dim, nfeatfr, nframes, &dim );
 	printf("\n"); 
 
 	fprintf(stderr, "%f s\n",toc());
