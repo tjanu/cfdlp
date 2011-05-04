@@ -59,6 +59,15 @@ Additions/Modifications by Thomas Janu <tjanu1@jhu.edu>
 	stage estimates the clean signal from the noisy signal in additive noise
 	scenarios. This is currently only possible for 8kHz-signals.
 -apply-wiener 0 disables the VAD and the Wiener filter (default)
+-fdplpwin <sec> sets the length of the fdplp window to <sec> seconds, defaults
+	to 5. In reverberant environments with long enough files, 10 is a useful
+	value.
+-truncate-last 0 is the default behaviour, not truncating the last frame to the
+	number of actual signal values (but zero-padding the signal to fill the whole
+	window).
+-truncate-last 1 truncates the last frame to the number of actual signal values.
+	Seriously speeds up the computation for short files (but also changes
+	the generated feature numbers significantly)
 
 ----------
 
