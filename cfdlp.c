@@ -524,6 +524,7 @@ void lpc( double *y, int len, int order, int compr, float *poles )
     }   
 
     complex *X = (complex *) MALLOC( N*sizeof(complex) );
+    memset(X, 0, N * sizeof(complex)); // fix uninitialized value-issue in multiplication below 
     fftw_plan plan = fftw_plan_dft_r2c_1d(N, Y, X, FFTW_ESTIMATE);
     fftw_execute(plan);
     fftw_destroy_plan(plan);
@@ -569,6 +570,7 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 	}
     }
     complex *ENV_cmplx = (complex *)MALLOC(N * sizeof(complex));
+    memset(ENV_cmplx, 0, N * sizeof(complex));
     fftw_plan plan = fftw_plan_dft_r2c_1d(N, Y, ENV_cmplx, FFTW_ESTIMATE);
     fftw_execute(plan);
     fftw_destroy_plan(plan);
@@ -1305,8 +1307,8 @@ void audspec(float **bands, int *nbands, int nframes)
 	//fprintf(stderr, "Done.\n");
     }
 
-//    fprintf(stderr, "Printing out energybands matrix before multiplication into energybands.ascii.\n");
     // DEBUG
+    //fprintf(stderr, "Printing out energybands matrix before multiplication into energybands.ascii.\n");
     //FILE *ebandsfile = fopen("energybands.txt", "w");
     //for (int i = 0; i < *nbands; i++) {
     //    for (int fr = 0; fr < nframes; fr++) {
@@ -1315,7 +1317,7 @@ void audspec(float **bands, int *nbands, int nframes)
     //    fprintf(ebandsfile, "\n");
     //}
     //fclose(ebandsfile);
-//    fprintf(stderr, "Done.\n");
+    //fprintf(stderr, "Done.\n");
 
     float *new_bands = (float *) MALLOC (nfilts * nframes * sizeof(float));
 
@@ -1332,8 +1334,8 @@ void audspec(float **bands, int *nbands, int nframes)
 	}
     }
 
-//    fprintf(stderr, "Printing out newbands after multiplication into newbands.ascii\n");
     // DEBUG
+    //fprintf(stderr, "Printing out newbands after multiplication into newbands.ascii\n");
     //FILE *nbandsfile = fopen("newbands.txt", "w");
     //for (int i = 0; i < nfilts; i++) {
     //    for (int f = 0; f < nframes; f++) {
@@ -1342,7 +1344,7 @@ void audspec(float **bands, int *nbands, int nframes)
     //    fprintf(nbandsfile, "\n");
     //}
     //fclose(nbandsfile);
-//    fprintf(stderr, "Done.\n");
+    //fprintf(stderr, "Done.\n");
 
 //    for (int f = 0; f < nframes; f++)
 //    {
@@ -1619,7 +1621,8 @@ int main(int argc, char **argv)
 
     // Compute the feature vector time series
     int nceps = 14;
-    int nfeatfr = 498; 
+    int nfeatfr = (int)floor((fdlpwin-fwin)/fstep)+1;
+//    int nfeatfr = 498; // better to compute that based on the size of fdlpwin...
     int dim = 0;
 
 //    float *feats = (float *) MALLOC(nfeatfr*nframes*dim*sizeof(float));
