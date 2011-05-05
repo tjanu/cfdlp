@@ -917,6 +917,10 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 	    *Np = round((indices[1] - indices[0]) / 12);
 	    break;
     }
+    if (*Np < 1)
+    {
+	fatal("fdplp needs more input speech samples!");
+    }
     float *p = (float *) MALLOC( (*Np+1)*nbands*sizeof(float) );
 
     // Time envelope estimation per band and per frame.
