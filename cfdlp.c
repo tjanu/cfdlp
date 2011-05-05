@@ -44,11 +44,12 @@ int fdplp_win_len_sec = 5;
 
 int limit_range = 0;
 int do_wiener = 0;
+float wiener_alpha = 0.9;
 int truncate_last = 0;
 
 void usage()
 {
-    fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n -limit-range <flag> - Limit DCT-spectrum to 125-3800Hz before FDPLP processing (0)\n -apply-wiener <flag> - Apply Wiener filter (helps against additive noise) (0)\n -fdplpwin <sec> - Length of FDPLP window in sec (better for reverberant environments when gain normalization is used: 10) (5)\n -truncate-last <flag> - truncate last frame if number of samples does not fill the entire fdplp window (speeds up computation but also changes numbers) (0)");
+    fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n -limit-range <flag> - Limit DCT-spectrum to 125-3800Hz before FDPLP processing (0)\n -apply-wiener <flag> - Apply Wiener filter (helps against additive noise) (0)\n -wiener-alpha <float> - sets the parameter alpha of the wiener filter (0.9)\n -fdplpwin <sec> - Length of FDPLP window in sec (better for reverberant environments when gain normalization is used: 10) (5)\n -truncate-last <flag> - truncate last frame if number of samples does not fill the entire fdplp window (speeds up computation but also changes numbers) (0)");
 }
 
 void parse_args(int argc, char **argv)
@@ -115,6 +116,10 @@ void parse_args(int argc, char **argv)
 	else if ( strcmp(argv[i], "-apply-wiener") == 0 )
 	{
 	    do_wiener = atoi(argv[++i]);
+	}
+	else if ( strcmp(argv[i], "-wiener-alpha") == 0 )
+	{
+	    wiener_alpha = (float)atof(argv[++i]);
 	}
 	else if ( strcmp(argv[i], "-fdplpwin") == 0)
 	{
@@ -564,7 +569,6 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 {
     int wlen = round(0.025 * Fs);
     float SP = 0.4;
-    float alpha = 0.9;
 
     int N = 2 * orig_len - 1;
     double *Y = (double *)MALLOC(N * sizeof(double));
@@ -614,11 +618,11 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 	    gamma[f * wlen + i] = fftframes[f * wlen + i] / Pn[f];
 	    if (f > 1)
 	    {
-		zeta[f * wlen + i] = alpha * X[(f-1) * wlen + i] / Pn[f] + (1 - alpha) * (gamma[f * wlen + i] - 1);
+		zeta[f * wlen + i] = wiener_alpha * X[(f-1) * wlen + i] / Pn[f] + (1 - wiener_alpha) * (gamma[f * wlen + i] - 1);
 	    }
 	    else
 	    {
-		zeta[f * wlen + i] = (1-alpha) * (gamma[f * wlen + i] - 1);
+		zeta[f * wlen + i] = (1-wiener_alpha) * (gamma[f * wlen + i] - 1);
 	    }
 	    G[f * wlen + i] = zeta[f * wlen + i] / (1 + zeta[f * wlen + i]); // Wiener filter gain
 	    X[f * wlen + i] = G[f * wlen + i] * G[f * wlen + i] * fftframes[f * wlen + i]; // obtain clean value
@@ -1600,7 +1604,7 @@ int main(int argc, char **argv)
     fprintf(stderr, "Input file = %s; N = %d samples\n", infile, N);
     fprintf(stderr, "Gain Norm %d \n",do_gain_norm);
     fprintf(stderr, "Limit DCT range: %d\n", limit_range);
-    fprintf(stderr, "Apply wiener filter: %d\n", do_wiener);
+    fprintf(stderr, "Apply wiener filter: %d (alpha=%g)\n", do_wiener, wiener_alpha);
 
     int fwin = 0.025*Fs;
     int fstep = 0.010*Fs; 
