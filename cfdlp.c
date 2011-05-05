@@ -598,34 +598,32 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     int envframes = 0;
     float *fftframes = fconstruct_frames(&ENV, &envlen, wlen, wlen - wlen * SP, &envframes);
 
-    float *Pn = (float *)MALLOC(envframes * sizeof(float));
     float *X = (float *)MALLOC(envframes * wlen * sizeof(float));
-    float *G = (float *)MALLOC(envframes * wlen * sizeof(float));
-    float *zeta = (float *)MALLOC(envframes * wlen * sizeof(float));
-    float *gamma = (float *)MALLOC(envframes * wlen * sizeof(float));
 
     for (int f = 0; f < envframes; f++)
     {
-	Pn[f] = 0.;
+	float Pn = 0.;
 	for (int i = 0; i < Nindices; i++)
 	{
-	    Pn[f] += fftframes[f * wlen + i];
+	    Pn += fftframes[f * wlen + i];
 	}
-	Pn[f] /= Nindices;
+	Pn /= Nindices;
 
 	for (int i = 0; i < wlen; i++)
 	{
-	    gamma[f * wlen + i] = fftframes[f * wlen + i] / Pn[f];
+	    float noisy_sample = fftframes[f * wlen + i];
+	    float gamma = noisy_sample / Pn;
+	    float zeta = 0.;
 	    if (f > 1)
 	    {
-		zeta[f * wlen + i] = wiener_alpha * X[(f-1) * wlen + i] / Pn[f] + (1 - wiener_alpha) * (gamma[f * wlen + i] - 1);
+		zeta = wiener_alpha * X[(f-1) * wlen + i] / Pn + (1 - wiener_alpha) * (gamma - 1);
 	    }
 	    else
 	    {
-		zeta[f * wlen + i] = (1-wiener_alpha) * (gamma[f * wlen + i] - 1);
+		zeta = (1-wiener_alpha) * (gamma - 1);
 	    }
-	    G[f * wlen + i] = zeta[f * wlen + i] / (1 + zeta[f * wlen + i]); // Wiener filter gain
-	    X[f * wlen + i] = G[f * wlen + i] * G[f * wlen + i] * fftframes[f * wlen + i]; // obtain clean value
+	    float G = zeta / (1 + zeta); // wiener filter gain
+	    X[f * wlen + i] = G * G * noisy_sample; // obtain clean value
 	}
     }
 
@@ -688,11 +686,7 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     FREE(ENV_cmplx);
     FREE(ENV);
     FREE(fftframes);
-    FREE(Pn);
     FREE(X);
-    FREE(G);
-    FREE(zeta);
-    FREE(gamma);
     FREE(ENV_output);
     FREE(inv_win);
     FREE(ENV_cmplx_op);
@@ -735,9 +729,6 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
 	}
     }
 
-    int *flag_VAD = MALLOC(sizeof(int) * Nframes);
-    memset(flag_VAD, 0, sizeof(int)*Nframes);
-
     int *indices = MALLOC(sizeof(int) * Nframes);
     *Nindices = 0;
 
@@ -774,7 +765,6 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
 	{
 	    if (frameEN - meanEN > SNR_THRESHOLD_VAD)
 	    {
-		flag_VAD[t] = 1;
 		nbSpeechFrame++;
 	    }
 	    else
@@ -787,18 +777,15 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
 		if (hangOver != 0)
 		{
 		    hangOver--;
-		    flag_VAD[t] = 1;
 		}
 		else
 		{
-		    flag_VAD[t] = 0;
 		    indices[(*Nindices)++] = t;
 		}
 	    }
 	}
 	else
 	{
-	    flag_VAD[t] = 0;
 	    indices[(*Nindices)++] = t;
 	}
     }
@@ -806,7 +793,6 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
     FREE(w);
     FREE(x_fr);
     FREE(copy);
-    FREE(flag_VAD);
     return indices;
 }
 
