@@ -49,11 +49,12 @@ int truncate_last = 0;
 
 void usage()
 {
-    fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n -limit-range <flag> - Limit DCT-spectrum to 125-3800Hz before FDPLP processing (0)\n -apply-wiener <flag> - Apply Wiener filter (helps against additive noise) (0)\n -wiener-alpha <float> - sets the parameter alpha of the wiener filter (0.9)\n -fdplpwin <sec> - Length of FDPLP window in sec (better for reverberant environments when gain normalization is used: 10) (5)\n -truncate-last <flag> - truncate last frame if number of samples does not fill the entire fdplp window (speeds up computation but also changes numbers) (0)");
+    fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n -limit-range <flag> - Limit DCT-spectrum to 125-3800Hz before FDPLP processing (0)\n -apply-wiener <flag> - Apply Wiener filter (helps against additive noise) (0)\n -wiener-alpha <float> - sets the parameter alpha of the wiener filter (0.9 for modulation and 0.1 for spectral features)\n -fdplpwin <sec> - Length of FDPLP window in sec (better for reverberant environments when gain normalization is used: 10) (5)\n -truncate-last <flag> - truncate last frame if number of samples does not fill the entire fdplp window (speeds up computation but also changes numbers) (0)");
 }
 
 void parse_args(int argc, char **argv)
 {
+    int wiener_alpha_given = 0;
     for ( int i = 1; i < argc; i++ )
     {
 	if ( strcmp(argv[i], "-i") == 0 )
@@ -120,6 +121,7 @@ void parse_args(int argc, char **argv)
 	else if ( strcmp(argv[i], "-wiener-alpha") == 0 )
 	{
 	    wiener_alpha = (float)atof(argv[++i]);
+	    wiener_alpha_given = 1;
 	}
 	else if ( strcmp(argv[i], "-fdplpwin") == 0)
 	{
@@ -148,6 +150,10 @@ void parse_args(int argc, char **argv)
 	usage();
     }
 
+    if (!wiener_alpha_given && do_spec)
+    {
+	wiener_alpha = 0.1;
+    }
 }
 
 void sdither( short *x, int N, int scale ) 
