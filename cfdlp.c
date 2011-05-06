@@ -30,6 +30,7 @@ char *printfile = NULL;
 int Fs = 8000;
 int do_gain_norm = 1;
 int do_spec = 0;
+int skip_bands = 0;
 int axis = 0;
 float * dctm = NULL;
 float *LOOKUP_TABLE = NULL;
@@ -37,7 +38,9 @@ int nbits_log = 14;
 int specgrm = 0;
 float *fft2decompm = NULL;
 float *wts = NULL;
+float *orig_wts = NULL;
 int *indices = NULL;
+int *orig_indices = NULL;
 int nbands = 0;
 int auditory_win_length = 0;
 int fdplp_win_len_sec = 5;
@@ -49,7 +52,7 @@ int truncate_last = 0;
 
 void usage()
 {
-    fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n -limit-range <flag> - Limit DCT-spectrum to 125-3800Hz before FDPLP processing (0)\n -apply-wiener <flag> - Apply Wiener filter (helps against additive noise) (0)\n -wiener-alpha <float> - sets the parameter alpha of the wiener filter (0.9 for modulation and 0.1 for spectral features)\n -fdplpwin <sec> - Length of FDPLP window in sec (better for reverberant environments when gain normalization is used: 10) (5)\n -truncate-last <flag> - truncate last frame if number of samples does not fill the entire fdplp window (speeds up computation but also changes numbers) (0)");
+    fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n -limit-range <flag> - Limit DCT-spectrum to 125-3800Hz before FDPLP processing (0)\n -apply-wiener <flag> - Apply Wiener filter (helps against additive noise) (0)\n -wiener-alpha <float> - sets the parameter alpha of the wiener filter (0.9 for modulation and 0.1 for spectral features)\n -fdplpwin <sec> - Length of FDPLP window in sec (better for reverberant environments when gain normalization is used: 10) (5)\n -truncate-last <flag> - truncate last frame if number of samples does not fill the entire fdplp window (speeds up computation but also changes numbers) (0)\n -skip-bands <int n> - Whether or not to skip the first n bands when computing the features (useful value for telephone data: 2) (0)");
 }
 
 void parse_args(int argc, char **argv)
@@ -131,6 +134,10 @@ void parse_args(int argc, char **argv)
 	{
 	    truncate_last = atoi(argv[++i]);
 	}
+	else if ( strcmp(argv[i], "-skip-bands") == 0)
+	{
+	    skip_bands = atoi(argv[++i]);
+	}
 	else
 	{
 	    fprintf(stderr, "unknown arg: %s\n", argv[i]);
@@ -153,6 +160,12 @@ void parse_args(int argc, char **argv)
     if (!wiener_alpha_given && do_spec)
     {
 	wiener_alpha = 0.1;
+    }
+
+    if (skip_bands < 0)
+    {
+	fprintf(stderr, "Negative number of bands to skip given - how should that be implemented?!\n");
+	usage();
     }
 }
 
@@ -866,13 +879,15 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 
     if (numbands != nbands || fdlpwin != auditory_win_length) {
 	fprintf(stderr, "(Re)creating auditory filter bank (nbands or fdlpwin changed)\n");
-	if (wts != NULL) {
-	    FREE(wts);
+	if (orig_wts != NULL) {
+	    FREE(orig_wts);
 	    wts = NULL;
+	    orig_wts = NULL;
 	}
-	if (indices != NULL) {
-	    FREE(indices);
+	if (orig_indices != NULL) {
+	    FREE(orig_indices);
 	    indices = NULL;
+	    orig_indices = NULL;
 	}
 	nbands = numbands;
 	auditory_win_length = fdlpwin;
@@ -896,6 +911,14 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 	    case AXIS_LINEAR_BARK:
 		linweights(auditory_win_length, Fs, dB, &wts, &indices, &nbands);
 		break;
+	}
+
+	orig_wts = wts;
+	orig_indices = indices;
+	if (skip_bands && nbands > skip_bands) {
+	    wts = &orig_wts[skip_bands];
+	    indices = &orig_indices[skip_bands];
+	    nbands -= skip_bands;
 	}
 
 	// DEBUG
@@ -1669,8 +1692,8 @@ int main(int argc, char **argv)
     FREE(signal);
     FREE(frames);
     FREE(feats);
-    FREE(wts);
-    FREE(indices);
+    FREE(orig_wts);
+    FREE(orig_indices);
     if (!(specgrm))
 	FREE(dctm);
     if (fft2decompm != NULL)
