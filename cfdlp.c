@@ -52,7 +52,7 @@ int truncate_last = 0;
 
 void usage()
 {
-    fatal("\n USAGE : \n[cfdlp -i <str> -o <str> (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n -limit-range <flag> - Limit DCT-spectrum to 125-3800Hz before FDPLP processing (0)\n -apply-wiener <flag> - Apply Wiener filter (helps against additive noise) (0)\n -wiener-alpha <float> - sets the parameter alpha of the wiener filter (0.9 for modulation and 0.1 for spectral features)\n -fdplpwin <sec> - Length of FDPLP window in sec (better for reverberant environments when gain normalization is used: 10) (5)\n -truncate-last <flag> - truncate last frame if number of samples does not fill the entire fdplp window (speeds up computation but also changes numbers) (0)\n -skip-bands <int n> - Whether or not to skip the first n bands when computing the features (useful value for telephone data: 2) (0)");
+    fatal("\n USAGE : \n[cfdlp -i <str> [-o <str> | -print <str>] (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n -limit-range <flag> - Limit DCT-spectrum to 125-3800Hz before FDPLP processing (0)\n -apply-wiener <flag> - Apply Wiener filter (helps against additive noise) (0)\n -wiener-alpha <float> - sets the parameter alpha of the wiener filter (0.9 for modulation and 0.1 for spectral features)\n -fdplpwin <sec> - Length of FDPLP window in sec (better for reverberant environments when gain normalization is used: 10) (5)\n -truncate-last <flag> - truncate last frame if number of samples does not fill the entire fdplp window (speeds up computation but also changes numbers) (0)\n -skip-bands <int n> - Whether or not to skip the first n bands when computing the features (useful value for telephone data: 2) (0)");
 }
 
 void parse_args(int argc, char **argv)
@@ -590,6 +590,9 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     float SP = 0.4;
 
     int N = 2 * orig_len - 1;
+    // DEBUG
+    //fprintf(stderr, "hlpc_wiener: wlen=%d, SP=%g, N=%d, orig_len=%d, order=%d, len=%d\n", wlen, SP, N, orig_len, order, len);
+
     double *Y = (double *)MALLOC(N * sizeof(double));
     for (int n = 0; n < N; n++)
     {
@@ -612,6 +615,19 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     {
 	ENV[i] = (float)cabs(ENV_cmplx[i]) * (float)cabs(ENV_cmplx[i]);
     }
+
+    // DEBUG
+    //static int framenum = 0;
+    //framenum++;
+
+    // DEBUG
+    //char namebuf[512];
+    //sprintf(namebuf, "hlpc-env-call-%d.txt", framenum);
+    //FILE *fd = fopen(namebuf, "w");
+    //for (int i = 0; i < orig_len; i++) {
+    //    fprintf(fd, "%g ", ENV[i]);
+    //}
+    //fclose(fd);
 
     int envlen = orig_len;
     int envframes = 0;
@@ -646,34 +662,66 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 	}
     }
 
+    // DEBUG
+    //char namebuf2[512];
+    //sprintf(namebuf2, "hlpc-fftframes-call-%d.txt", framenum);
+    //fd = fopen(namebuf2, "w");
+    //for (int f = 0; f < envframes; f++) {
+    //    for (int i = 0; i < wlen; i++) {
+    //        fprintf(fd, "%g ", X[f * wlen + i]);
+    //    }
+    //    fprintf(fd, "\n");
+    //}
+    //fclose(fd);
+
     // reconstruct "signal"
     int shiftwidth = (int)(wlen - wlen * SP);
     int siglen = (envframes - 1) * shiftwidth + wlen;
-    float *ENV_output = (float *)MALLOC(siglen * sizeof(float));
+    float *ENV_output = (float *)MALLOC(MAX(orig_len, siglen) * sizeof(float));
+    memset(ENV_output, 0, MAX(orig_len, siglen) * sizeof(float));
     float *inv_win = (float *)MALLOC(siglen * sizeof(float));
+    memset(inv_win, 0, siglen * sizeof(float));
     for (int i = 0; i < envframes; i++)
     {
 	int start = i * shiftwidth;
 	float *x = X + i * wlen;
-	for (int j = start; j < start + wlen; j++) {
-	    ENV_output[j] += x[j-start];
-	    inv_win[j] += 1;
+	for (int j = 0; j < wlen; j++) {
+	    ENV_output[start + j] += x[j];
+	    inv_win[start + j] += 1;
 	}
+//	for (int j = start; j < start + wlen; j++) {
+//	    ENV_output[j] += x[j-start];
+//	    inv_win[j] += 1;
+//	}
     }
-    if (orig_len > siglen)
+    for (int i = 0; i < MAX(orig_len, siglen); i++)
     {
-	for (int i = 0; i < orig_len; i++)
+	if (isnan(ENV_output[i])) {
+	    fprintf(stderr, "ENV_output[%d] is nan before normalization!\n", i);
+	}
+	if (i < siglen)
 	{
-	    if (i < siglen)
-	    {
+	    if (inv_win != 0) {
 		ENV_output[i] /= inv_win[i];
 	    }
-	    else
-	    {
-		ENV_output[i] = ENV[i];
-	    }
+	}
+	else
+	{
+	    ENV_output[i] = ENV[i];
+	}
+	if (isnan(ENV_output[i])) {
+	    fprintf(stderr, "ENV_output[%d] is nan after normalization!\n", i);
 	}
     }
+
+    // DEBUG
+    //char namebuf3[512];
+    //sprintf(namebuf3, "hlpc-env_output-call%d.txt", framenum);
+    //fd = fopen(namebuf3, "w");
+    //for (int i = 0; i < orig_len; i++) {
+    //    fprintf(fd, "%g ", ENV_output[i]);
+    //}
+    //fclose(fd);
 
     complex *ENV_cmplx_op = (complex *)MALLOC(N * sizeof(complex));
     for (int i = 0; i < N; i++) {
@@ -684,20 +732,48 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 	}
 	else
 	{
-	    env_output_index = N - i;
+	    env_output_index = N - i - 1;
 	}
 	ENV_cmplx_op[i] = ENV_output[env_output_index] / len;
     }
+
+    // DEBUG
+    //char namebuf4[512];
+    //sprintf(namebuf4, "hlpc-env_cmplx_op-call%d.txt", framenum);
+    //fd = fopen(namebuf4, "w");
+    //for (int i = 0; i < N; i++) {
+    //    fprintf(fd, "%g+%gi ", creal(ENV_cmplx_op[i]), cimag(ENV_cmplx_op[i]));
+    //}
+    //fclose(fd);
 
     double *R = (double *)MALLOC(N * sizeof(double));
 
     plan = fftw_plan_dft_c2r_1d(N, ENV_cmplx_op, R, FFTW_ESTIMATE);
     fftw_execute(plan);
     fftw_destroy_plan(plan);
+
+    // DEBUG
+    //char namebuf5[512];
+    //sprintf(namebuf5, "hlpc-R-unnormalized-call%d.txt", framenum);
+    //fd = fopen(namebuf5, "w");
+    //for (int i = 0; i < N; i++) {
+    //    fprintf(fd, "%g ", R[i]);
+    //}
+    //fclose(fd);
+
     for ( int n = 0; n < N; n++ )
     {
 	R[n] /= N;
     }
+
+    // DEBUG
+    //char namebuf6[512];
+    //sprintf(namebuf6, "hlpc-R-call%d.txt", framenum);
+    //fd = fopen(namebuf6, "w");
+    //for (int i = 0; i < N; i++) {
+    //    fprintf(fd, "%g ", R[i]);
+    //}
+    //fclose(fd);
 
     levinson(order, R, poles);
 
@@ -922,7 +998,7 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 	}
 
 	// DEBUG
-	//fd = fopen("auditory_filterbank.txt", "w");
+	//FILE *fd = fopen("auditory_filterbank.txt", "w");
 	//for (int i = 0; i < nbands; i++) {
 	//    for (int j = 0; j < fdlpwin; j++) {
 	//        fprintf(fd, "%g ", wts[i * fdlpwin + j]);
@@ -946,6 +1022,9 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 	    *Np = round((indices[1] - indices[0]) / 12);
 	    break;
     }
+    // DEBUG
+    //fprintf(stderr, "Np=%d\n", (*Np));
+
     float *p = (float *) MALLOC( (*Np+1)*nbands*sizeof(float) );
 
     // Time envelope estimation per band and per frame.
