@@ -279,8 +279,8 @@ float * general_hamming(int N, float alpha)
     return x;
 }
 
-// Function to implement the hanning window
-float * hanning(int N)
+// Function to implement the hann window
+float * hann(int N)
 {
     return general_hamming(N, 0.5);
 }
@@ -631,27 +631,47 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 
     int envlen = orig_len;
     int envframes = 0;
-    float *fftframes = fconstruct_frames(&ENV, &envlen, wlen, wlen - wlen * SP, &envframes);
+    int overlap = wlen - (int)round((float)wlen * SP);
+    float *fftframes = fconstruct_frames(&ENV, &envlen, wlen, overlap, &envframes);
 
     float *X = (float *)MALLOC(envframes * wlen * sizeof(float));
+    float *Pn = (float *)MALLOC(wlen * sizeof(float));
+    //fprintf(stderr, "wlen=%d, olap=%d, envframes=%d, origlen=%d, padded len=%d\n", wlen, overlap, envframes, orig_len, envlen);
+    for (int i = 0; i < wlen; i++) {
+	Pn[i] = 0;
+    }
+    for (int i = 0; i < Nindices; i++) {
+	int frameindex = vadindices[i];
+	for (int j = 0; j < wlen; j++) {
+	    Pn[j] += fftframes[frameindex * wlen + j];
+//	    if (isnan(Pn[j])) {
+//		fprintf(stderr, "Pn[%d] is nan! (frameindex=%d, i=%d)\n", j, frameindex, i);
+//	    }
+	}
+    }
+    for (int i = 0; i < wlen; i++) {
+	Pn[i] /= Nindices;
+    }
+
+    // DEBUG
+    //char namebufpn[512];
+    //sprintf(namebufpn, "hlpc-pn-call-%d.txt", framenum);
+    //fd = fopen(namebufpn, "w");
+    //for (int i = 0; i < wlen; i++) {
+    //    fprintf(fd, "%g ", Pn[i]);
+    //}
+    //fclose(fd);
 
     for (int f = 0; f < envframes; f++)
     {
-	float Pn = 0.;
-	for (int i = 0; i < Nindices; i++)
-	{
-	    Pn += fftframes[f * wlen + i];
-	}
-	Pn /= Nindices;
-
 	for (int i = 0; i < wlen; i++)
 	{
 	    float noisy_sample = fftframes[f * wlen + i];
-	    float gamma = noisy_sample / Pn;
+	    float gamma = noisy_sample / Pn[i];
 	    float zeta = 0.;
 	    if (f > 1)
 	    {
-		zeta = wiener_alpha * X[(f-1) * wlen + i] / Pn + (1 - wiener_alpha) * (gamma - 1);
+		zeta = wiener_alpha * X[(f-1) * wlen + i] / Pn[i] + (1 - wiener_alpha) * (gamma - 1);
 	    }
 	    else
 	    {
@@ -675,7 +695,7 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     //fclose(fd);
 
     // reconstruct "signal"
-    int shiftwidth = (int)(wlen - wlen * SP);
+    int shiftwidth = (int)(wlen * SP);
     int siglen = (envframes - 1) * shiftwidth + wlen;
     float *ENV_output = (float *)MALLOC(MAX(orig_len, siglen) * sizeof(float));
     memset(ENV_output, 0, MAX(orig_len, siglen) * sizeof(float));
@@ -696,9 +716,9 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     }
     for (int i = 0; i < MAX(orig_len, siglen); i++)
     {
-	if (isnan(ENV_output[i])) {
-	    fprintf(stderr, "ENV_output[%d] is nan before normalization!\n", i);
-	}
+//	if (isnan(ENV_output[i])) {
+//	    fprintf(stderr, "ENV_output[%d] is nan before normalization!\n", i);
+//	}
 	if (i < siglen)
 	{
 	    if (inv_win != 0) {
@@ -709,9 +729,9 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 	{
 	    ENV_output[i] = ENV[i];
 	}
-	if (isnan(ENV_output[i])) {
-	    fprintf(stderr, "ENV_output[%d] is nan after normalization!\n", i);
-	}
+//	if (isnan(ENV_output[i])) {
+//	    fprintf(stderr, "ENV_output[%d] is nan after normalization!\n", i);
+//	}
     }
 
     // DEBUG
@@ -781,6 +801,7 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     FREE(ENV_cmplx);
     FREE(ENV);
     FREE(fftframes);
+    FREE(Pn);
     FREE(X);
     FREE(ENV_output);
     FREE(inv_win);
@@ -808,14 +829,15 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
 
     // frame signal inte 25ms frames with 10ms shift
     int flen = 0.025 * Fs;
-    float *w = hanning(flen);
+    float *w = hann(flen);
     float SP = 0.4;
 
     short *copy = MALLOC(sizeof(short) * N);
     memcpy(copy, x, sizeof(short) * N);
     int Ncopy = N;
     int Nframes = 0;
-    short *x_fr = sconstruct_frames(&copy, &Ncopy, flen, flen - (int)round((float)flen * SP), &Nframes);
+    int overlap = flen - (int)round((float)flen * SP);
+    short *x_fr = sconstruct_frames(&copy, &Ncopy, flen, overlap, &Nframes);
     for (int f = 0; f < Nframes; f++)
     {
 	for (int n = 0; n < flen; n++)
@@ -827,13 +849,15 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
     int *indices = MALLOC(sizeof(int) * Nframes);
     *Nindices = 0;
 
+    //fprintf(stderr, "\n\ncheck_VAD\n\n");
+    //fprintf(stderr, "flen=%d, olap=%d, Nframes=%d, N=%d, padded N=%d\n", flen, overlap, Nframes, N, Ncopy);
     for (int t = 0; t < Nframes; t++)
     {
 	short *x_cur = x_fr + t * flen;
 	float lambdaLTE = LAMBDA_LTE;
 	if (t < NB_FRAME_THRESHOLD_LTE)
 	{
-	    lambdaLTE = 1. - (1. / (float)t);
+	    lambdaLTE = 1. - (1. / (float)(t+1));
 	}
 	float sum = 0.;
 	for (int i = flen - 80; i < flen; i++)
@@ -841,47 +865,60 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
 	    sum += x_cur[i] * x_cur[i];
 	}
 	float frameEN = 0.5 + 16 / (log(2)) * (log((64 + sum) / 64.));
+	//fprintf(stderr, "\tt=%d: lambdaLTE=%g, sum=%g, frameEN=%g, meanEN=%g\n", t, lambdaLTE, sum, frameEN, meanEN);
 	if ((frameEN - meanEN) < SNR_THRESHOLD_UPD_LTE || t < MIN_FRAME)
 	{
+	    //fprintf(stderr, "\t(frameEN-meanEN)<SNR_THRESHOLD_UPD_LTE || t < MIN_FRAME\n");
 	    if (frameEN < meanEN || t < MIN_FRAME)
 	    {
 		meanEN = meanEN + (1 - lambdaLTE) * (frameEN - meanEN);
+		//fprintf(stderr, "\tframeEN < meanEN || t < MIN_FRAME --> meanEN=%g\n", meanEN);
 	    }
 	    else
 	    {
 		meanEN = meanEN + (1 - lambdaLTEhigherE) * (frameEN - meanEN);
+		//fprintf(stderr, "\t!(frameEN < meanEN || t < MIN_FRAME) --> meanEN=%g\n", meanEN);
 	    }
 	    if (meanEN < ENERGY_FLOOR)
 	    {
 		meanEN = ENERGY_FLOOR;
+		//fprintf(stderr, "\tmeanEN < ENERGY_FLOOR --> meanEN=%g\n", meanEN);
 	    }
 	}
 	if (t > 4)
 	{
+	    //fprintf(stderr, "\tt>4 --> actually looking at it\n");
 	    if (frameEN - meanEN > SNR_THRESHOLD_VAD)
 	    {
 		nbSpeechFrame++;
+		//fprintf(stderr, "\t\tframeEN-meanEN > SNR_THRESHOLD_VAD -> nbSpeechFrame++ (now %d)\n", nbSpeechFrame);
 	    }
 	    else
 	    {
+		//fprintf(stderr, "\t\tframeEN-meanEN <= SNR_THRESHOLD_VAD\n");
 		if (nbSpeechFrame > MIN_SPEECH_FRAME_HANGOVER)
 		{
 		    hangOver = HANGOVER;
+		    //fprintf(stderr, "\t\tnbSpeechFrame > MIN_SPEECH_FRAME_HANGOVER --> hangOver=%d\n", hangOver);
 		}
 		nbSpeechFrame = 0;
+		//fprintf(stderr, "\t\tReset nbSpeechFrame\n");
 		if (hangOver != 0)
 		{
 		    hangOver--;
+		    //fprintf(stderr, "hangOver != 0 -> decreasing (now %d)\n", hangOver);
 		}
 		else
 		{
 		    indices[(*Nindices)++] = t;
+		    //fprintf(stderr, "hangOver == 0 -> frame %d is non-speech frame number %d!\n", t, *Nindices);
 		}
 	    }
 	}
 	else
 	{
 	    indices[(*Nindices)++] = t;
+	    //fprintf(stderr, "t <= 4 --> considered non-speech frame number %d\n", *Nindices);
 	}
     }
 
@@ -898,6 +935,12 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
     if (do_wiener)
     {
 	NIS = check_VAD(x, N, Fs, &NNIS);
+	// DEBUG
+	//fprintf(stderr, "\n\nVAD indices (%d)\n\n", NNIS);
+	//for (int i = 0; i < NNIS; i++) {
+	//    fprintf(stderr, "%d ", NIS[i]);
+	//}
+	//fprintf(stderr, "\n");
     }
     double *y = (double *) MALLOC(N*sizeof(double));
 
