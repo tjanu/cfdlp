@@ -1299,7 +1299,11 @@ void spec2cep4energy(float * frames, int fdlpwin, int nframes, int ncep, float *
 		}
 		else
 		{
-		    feat[i] += (0.33*icsi_log(frame[j],LOOKUP_TABLE,nbits_log))*dctm[i*fdlpwin+j]; //Cubic root compression and log
+		    float f1 = dctm[i * fdlpwin + j];
+		    float f2 = icsi_log(frame[j], LOOKUP_TABLE, nbits_log) * f1;
+		    float f3 = 0.33 * f2;
+		    feat[i] = f3;
+		    //feat[i] += (0.33*icsi_log(frame[j],LOOKUP_TABLE,nbits_log))*dctm[i*fdlpwin+j]; //Cubic root compression and log
 		    // feat[i] += log(frame[j])*dctm[i*fdlpwin+j];
 		}
 	    }
@@ -1517,7 +1521,7 @@ void audspec(float **bands, int *nbands, int nframes)
     *nbands = nfilts;
 }
 
-void compute_fdlp_feats( short *x, int N, int Fs, int nceps, float **feats, int nfeatfr, int numframes, int *dim)
+void compute_fdlp_feats( short *x, int N, int Fs, int* nceps, float **feats, int nfeatfr, int numframes, int *dim)
 {
     int flen=0.025*Fs;   // frame length corresponding to 25ms
     int fhop=0.010*Fs;   // frame overlap corresponding to 10ms
@@ -1549,19 +1553,19 @@ void compute_fdlp_feats( short *x, int N, int Fs, int nceps, float **feats, int 
     if (*feats == NULL)
     { // Here we know nbands, finally, and since feats is NULL we are on the first frame
 
-	*dim = nbands*nceps*2;
+	*dim = nbands*(*nceps)*2;
 	if (do_spec)
 	{
 	    if (specgrm) 
 	    {
 		*dim = nbands;
 		do_spec = 1;
-		nceps=nbands;
+		*nceps=nbands;
 	    }
 	    else
 	    {
-		nceps=13; 
-		*dim = nceps*3;
+		*nceps=13; 
+		*dim = (*nceps)*3;
 	    } 
 	}
 
@@ -1644,7 +1648,7 @@ void compute_fdlp_feats( short *x, int N, int Fs, int nceps, float **feats, int 
 
 	    float * frames = fconstruct_frames(&env_pad1, &Npad1, fdlpwin, fdlpolap, &nframes);
 
-	    spec2cep(frames, fdlpwin, nframes, nceps, nbands, i, 0, *feats, 1 );
+	    spec2cep(frames, fdlpwin, nframes, *nceps, nbands, i, 0, *feats, 1 );
 
 	    FREE(frames);
 
@@ -1695,7 +1699,7 @@ void compute_fdlp_feats( short *x, int N, int Fs, int nceps, float **feats, int 
 
 	    frames = fconstruct_frames(&env_pad1, &Npad1, fdlpwin, fdlpolap, &nframes);
 
-	    spec2cep(frames, fdlpwin, nframes, nceps, nbands, i, nceps, *feats, 1);  
+	    spec2cep(frames, fdlpwin, nframes, *nceps, nbands, i, *nceps, *feats, 1);  
 
 	    FREE(frames);
 	    FREE(env);
@@ -1713,7 +1717,7 @@ void compute_fdlp_feats( short *x, int N, int Fs, int nceps, float **feats, int 
 	}
 	else
 	{
-	    spec2cep4energy(energybands, nbands, nframes, nceps, *feats, 0);
+	    spec2cep4energy(energybands, nbands, nframes, *nceps, *feats, 0);
 	}
     }
 
@@ -1793,7 +1797,15 @@ int main(int argc, char **argv)
 	sdither( xwin, local_size, 1 );
 	sub_mean( xwin, local_size );
 
-	compute_fdlp_feats( xwin, local_size, Fs, nceps, &feats + f * nfeatfr * dim, nfeatfr, nframes, &dim );
+	if (feats == NULL)
+	{
+	    compute_fdlp_feats( xwin, local_size, Fs, &nceps, &feats, nfeatfr, nframes, &dim );
+	}
+	else
+	{
+	    float *feat_mem = feats + f * nfeatfr * dim;
+	    compute_fdlp_feats( xwin, local_size, Fs, &nceps, &feat_mem, nfeatfr, nframes, &dim );
+	}
 	printf("\n"); 
 
 	fprintf(stderr, "%f s\n",toc());
