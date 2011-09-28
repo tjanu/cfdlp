@@ -548,7 +548,7 @@ void lpc( double *y, int len, int order, int compr, float *poles )
     double *Y = (double *) MALLOC( N*sizeof(double) );
     for ( int n = 0; n < N; n++ )
     {
-	if ( n <= len )
+	if ( n < len )
 	{
 	    Y[n] = y[n];
 	}
@@ -597,7 +597,7 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     double *Y = (double *)MALLOC(N * sizeof(double));
     for (int n = 0; n < N; n++)
     {
-	if (n <= len)
+	if (n < len)
 	{
 	    Y[n] = y[n];
 	}
@@ -670,7 +670,7 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 	    float noisy_sample = fftframes[f * wlen + i];
 	    float gamma = noisy_sample / Pn[i];
 	    float zeta = 0.;
-	    if (f > 1)
+	    if (f > 0)
 	    {
 		zeta = wiener_alpha * X[(f-1) * wlen + i] / Pn[i] + (1 - wiener_alpha) * (gamma - 1);
 	    }
@@ -724,7 +724,7 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 	{
 	    if (inv_win != 0) {
 		ENV_output[i] /= inv_win[i];
-	    }
+	    } else { fprintf(stderr, "inv_win[%d] is zero?!\n", i); }
 	}
 	else
 	{
@@ -745,15 +745,16 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     //fclose(fd);
 
     complex *ENV_cmplx_op = (complex *)MALLOC(N * sizeof(complex));
+    N = 2 * siglen - 1;
     for (int i = 0; i < N; i++) {
 	int env_output_index = 0;
-	if (i < orig_len)
+	if (i < siglen)
 	{
 	    env_output_index = i;
 	}
 	else
 	{
-	    env_output_index = N - i - 1;
+	    env_output_index = N - i;
 	}
 	ENV_cmplx_op[i] = ENV_output[env_output_index] / len;
     }
