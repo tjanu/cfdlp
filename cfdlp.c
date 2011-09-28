@@ -744,8 +744,8 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     //}
     //fclose(fd);
 
-    complex *ENV_cmplx_op = (complex *)MALLOC(N * sizeof(complex));
     N = 2 * siglen - 1;
+    complex *ENV_cmplx_op = (complex *)MALLOC(N * sizeof(complex));
     for (int i = 0; i < N; i++) {
 	int env_output_index = 0;
 	if (i < siglen)
