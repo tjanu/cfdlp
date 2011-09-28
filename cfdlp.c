@@ -189,7 +189,7 @@ void fdither( float *x, int N, int scale )
 
 void sub_mean( short *x, int N ) 
 {
-    float sum = 0;
+    float sum = 0.;
     for ( int i = 0; i < N; i++ )
     {
 	sum += x[i];
@@ -203,10 +203,11 @@ void sub_mean( short *x, int N )
     }
 }
 
-short *sconstruct_frames( short **x, int *N, int width, int overlap, int *nframes )
+short *sconstruct_frames( short **x, int *N, int width, int overlap, int *nframes, int *add_samp)
 {
     *nframes = ceil(((float) *N-width)/(width-overlap)+1);
     int padlen = width + (*nframes-1)*(width-overlap);
+    *add_samp = padlen - *N;
 
     *x = (short *) realloc(*x, padlen*sizeof(short));
     memset(*x+*N, 0, sizeof(short)*(padlen-*N));
@@ -837,7 +838,8 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
     int Ncopy = N;
     int Nframes = 0;
     int overlap = flen - (int)round((float)flen * SP);
-    short *x_fr = sconstruct_frames(&copy, &Ncopy, flen, overlap, &Nframes);
+    int add_samp = 0;
+    short *x_fr = sconstruct_frames(&copy, &Ncopy, flen, overlap, &Nframes, &add_samp);
     for (int f = 0; f < Nframes; f++)
     {
 	for (int n = 0; n < flen; n++)
@@ -979,6 +981,8 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 
     float nyqbar;
     int numbands = 0;
+    static int old_nbands = 0;
+    static int bank_nbands = 0;
     switch (axis)
     {
 	case AXIS_MEL:
@@ -993,10 +997,13 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 	case AXIS_LINEAR_BARK:
 	    nyqbar = Fs/2;
 	    numbands = MIN(96, (int)round((float)fdlpwin/100.));
+	    if (old_nbands != 0) {
+		numbands = old_nbands;
+	    }
 	    break;
     }
 
-    if (numbands != nbands || fdlpwin != auditory_win_length) {
+    if (numbands != bank_nbands || fdlpwin != auditory_win_length) {
 	fprintf(stderr, "(Re)creating auditory filter bank (nbands or fdlpwin changed)\n");
 	if (orig_wts != NULL) {
 	    FREE(orig_wts);
@@ -1008,7 +1015,7 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 	    indices = NULL;
 	    orig_indices = NULL;
 	}
-	nbands = numbands;
+	bank_nbands = numbands;
 	auditory_win_length = fdlpwin;
     }
 
@@ -1016,29 +1023,30 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 	// Construct the auditory filterbank
 
 	float dB = 48;
-	wts = (float *) MALLOC(nbands*auditory_win_length*sizeof(float));
-	indices = (int *) MALLOC(nbands*2*sizeof(int));
+	wts = (float *) MALLOC(bank_nbands*auditory_win_length*sizeof(float));
+	indices = (int *) MALLOC(bank_nbands*2*sizeof(int));
 	switch (axis)
 	{
 	    case AXIS_MEL:
-		melweights(auditory_win_length, Fs, dB, wts, indices, &nbands);
+		melweights(auditory_win_length, Fs, dB, wts, indices, &bank_nbands);
 		break;
 	    case AXIS_BARK:
-		barkweights(auditory_win_length, Fs, dB, wts, indices, &nbands);
+		barkweights(auditory_win_length, Fs, dB, wts, indices, &bank_nbands);
 		break;
 	    case AXIS_LINEAR_MEL:
 	    case AXIS_LINEAR_BARK:
-		linweights(auditory_win_length, Fs, dB, &wts, &indices, &nbands);
+		linweights(auditory_win_length, Fs, dB, &wts, &indices, &bank_nbands);
 		break;
 	}
 
 	orig_wts = wts;
 	orig_indices = indices;
-	if (skip_bands && nbands > skip_bands) {
+	if (skip_bands && bank_nbands > skip_bands) {
 	    wts = &orig_wts[skip_bands];
 	    indices = &orig_indices[skip_bands];
-	    nbands -= skip_bands;
+	    bank_nbands -= skip_bands;
 	}
+	old_nbands = bank_nbands;
 
 	// DEBUG
 	//FILE *fd = fopen("auditory_filterbank.txt", "w");
@@ -1050,6 +1058,8 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 	//}
 	//fclose(fd);
     }
+    
+    nbands = bank_nbands;
 
     fprintf(stderr, "Number of sub-bands = %d\n", nbands);	
     switch (axis)
@@ -1187,6 +1197,7 @@ float * fdlpenv_mod( float *p, int Np, int N )
     fftw_destroy_plan(plan);
 
     double *h = (double *) MALLOC( nfft*sizeof(double) );
+    memset(h, 0, nfft * sizeof(double));
 
     nfft = nfft/2+1;
     for ( int n = 0; n < nfft; n++ )
@@ -1299,11 +1310,7 @@ void spec2cep4energy(float * frames, int fdlpwin, int nframes, int ncep, float *
 		}
 		else
 		{
-		    float f1 = dctm[i * fdlpwin + j];
-		    float f2 = icsi_log(frame[j], LOOKUP_TABLE, nbits_log) * f1;
-		    float f3 = 0.33 * f2;
-		    feat[i] = f3;
-		    //feat[i] += (0.33*icsi_log(frame[j],LOOKUP_TABLE,nbits_log))*dctm[i*fdlpwin+j]; //Cubic root compression and log
+		    feat[i] += (0.33*icsi_log(frame[j],LOOKUP_TABLE,nbits_log))*dctm[i*fdlpwin+j]; //Cubic root compression and log
 		    // feat[i] += log(frame[j])*dctm[i*fdlpwin+j];
 		}
 	    }
@@ -1764,7 +1771,8 @@ int main(int argc, char **argv)
     int fdlpwin = fdplp_win_len_sec * 40 * fwin;
     int fdlpolap = 0.020*Fs;  
     int nframes;
-    short *frames = sconstruct_frames(&signal, &N, fdlpwin, fdlpolap, &nframes); 
+    int add_samp;
+    short *frames = sconstruct_frames(&signal, &N, fdlpwin, fdlpolap, &nframes, &add_samp);
 
     // DEBUG
     //fd = fopen("speech_frames.txt", "w");
@@ -1778,15 +1786,14 @@ int main(int argc, char **argv)
 
     // Compute the feature vector time series
     int nceps = 14;
-    int nfeatfr = (int)floor((fdlpwin-fwin)/fstep)+1;
-//    int nfeatfr = 498; // better to compute that based on the size of fdlpwin...
     int dim = 0;
+    int nfeatfr_calculated = 0;
 
-//    float *feats = (float *) MALLOC(nfeatfr*nframes*dim*sizeof(float));
     float *feats = NULL;
 
     tic();
-    for ( int f = 0; f < nframes; f++ )
+    int stop_before = 0;
+    for ( int f = 0; !stop_before && f < nframes; f++ )
     {
 	int local_size = fdlpwin;
 	if (truncate_last && Nsignal - f * fdlpwin < fdlpwin)
@@ -1794,8 +1801,21 @@ int main(int argc, char **argv)
 	    local_size = Nsignal - f * fdlpwin;
 	}
 	short *xwin = frames+f*fdlpwin;
+	if (f < nframes - 1 && Nsignal - (f + 1) * fdlpwin < 0.2 * Fs)
+	{
+	    // have at least .2 seconds in the last frame or just enlarge the second-to-last frame
+	    local_size = Nsignal + fdlpolap - f * fdlpwin;
+	    if (local_size > Nsignal)
+	    {
+		local_size = Nsignal;
+	    }
+	    stop_before = 1;
+	    xwin = signal + (Nsignal - local_size);
+	}
 	sdither( xwin, local_size, 1 );
 	sub_mean( xwin, local_size );
+
+	int nfeatfr = (int)floor((local_size - fwin)/fstep)+1;
 
 	if (feats == NULL)
 	{
@@ -1803,10 +1823,11 @@ int main(int argc, char **argv)
 	}
 	else
 	{
-	    float *feat_mem = feats + f * nfeatfr * dim;
+	    float *feat_mem = feats + nfeatfr_calculated * dim;
 	    compute_fdlp_feats( xwin, local_size, Fs, &nceps, &feat_mem, nfeatfr, nframes, &dim );
 	}
 	printf("\n"); 
+	nfeatfr_calculated += nfeatfr;
 
 	fprintf(stderr, "%f s\n",toc());
     }
