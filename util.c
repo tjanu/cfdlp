@@ -46,6 +46,10 @@ char *mmap_file(char *fn, int *len)
 int lenchars_file(char *fn)
 {
   FILE *fd = fopen(fn, "r");
+  if (fd == NULL) {
+    perror("Unable to open input file");
+    exit(1);
+  }
   if(fseek(fd, 0, SEEK_END) == EOF) fatal("seek failed");
   int len = ftell(fd);
   fclose(fd);
@@ -55,9 +59,14 @@ int lenchars_file(char *fn)
 char *readchars_file(char *fn, long offset, int *nread)
 {
    FILE *fd = fopen(fn, "r");
+   if (fd == NULL) {
+       perror("Unable to open input file");
+       exit(1);
+   }
    if(fseek(fd, offset, SEEK_SET) == EOF) fatal("seek failed");
    
    char *result = MALLOC(*nread);
+   memset(result, 0, *nread);
    int nbytesread = fread(result, 1, *nread, fd);
    //fprintf(stderr,"nread = %d\n",nbytesread);
    
@@ -107,8 +116,12 @@ short *readsignal_file(char *fn, int *N)
 void writefeats_file(char *fn, float *feats, int D, int nframes) 
 {
    FILE *fd = fopen(fn, "w");
-   fwrite(feats, D*nframes, sizeof(float), fd);
-   fclose(fd);
+   if (fd == NULL) {
+       perror("Unable to open output file for writing");
+   } else {
+       fwrite(feats, D*nframes, sizeof(float), fd);
+       fclose(fd);
+   }
 }
 
 void printfeats_file(char *fn, float *feats, int D, int nframes) 

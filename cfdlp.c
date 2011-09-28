@@ -189,7 +189,7 @@ void fdither( float *x, int N, int scale )
 
 void sub_mean( short *x, int N ) 
 {
-    float sum = 0;
+    float sum = 0.;
     for ( int i = 0; i < N; i++ )
     {
 	sum += x[i];
@@ -838,7 +838,8 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
     int Ncopy = N;
     int Nframes = 0;
     int overlap = flen - (int)round((float)flen * SP);
-    short *x_fr = sconstruct_frames(&copy, &Ncopy, flen, overlap, &Nframes);
+    int add_samp = 0;
+    short *x_fr = sconstruct_frames(&copy, &Ncopy, flen, overlap, &Nframes, &add_samp);
     for (int f = 0; f < Nframes; f++)
     {
 	for (int n = 0; n < flen; n++)
@@ -1804,6 +1805,10 @@ int main(int argc, char **argv)
 	{
 	    // have at least .2 seconds in the last frame or just enlarge the second-to-last frame
 	    local_size = Nsignal + fdlpolap - f * fdlpwin;
+	    if (local_size > Nsignal)
+	    {
+		local_size = Nsignal;
+	    }
 	    stop_before = 1;
 	    xwin = signal + (Nsignal - local_size);
 	}
