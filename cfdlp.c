@@ -858,7 +858,7 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
     {
 	short *x_cur = x_fr + t * flen;
 	float lambdaLTE = LAMBDA_LTE;
-	if (t < NB_FRAME_THRESHOLD_LTE)
+	if (t < NB_FRAME_THRESHOLD_LTE - 1)
 	{
 	    lambdaLTE = 1. - (1. / (float)(t+1));
 	}
@@ -869,10 +869,10 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
 	}
 	float frameEN = 0.5 + 16 / (log(2)) * (log((64 + sum) / 64.));
 	//fprintf(stderr, "\tt=%d: lambdaLTE=%g, sum=%g, frameEN=%g, meanEN=%g\n", t, lambdaLTE, sum, frameEN, meanEN);
-	if ((frameEN - meanEN) < SNR_THRESHOLD_UPD_LTE || t < MIN_FRAME)
+	if ((frameEN - meanEN) < SNR_THRESHOLD_UPD_LTE || t < MIN_FRAME - 1)
 	{
 	    //fprintf(stderr, "\t(frameEN-meanEN)<SNR_THRESHOLD_UPD_LTE || t < MIN_FRAME\n");
-	    if (frameEN < meanEN || t < MIN_FRAME)
+	    if (frameEN < meanEN || t < MIN_FRAME - 1)
 	    {
 		meanEN = meanEN + (1 - lambdaLTE) * (frameEN - meanEN);
 		//fprintf(stderr, "\tframeEN < meanEN || t < MIN_FRAME --> meanEN=%g\n", meanEN);
@@ -888,7 +888,7 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
 		//fprintf(stderr, "\tmeanEN < ENERGY_FLOOR --> meanEN=%g\n", meanEN);
 	    }
 	}
-	if (t > 4)
+	if (t > 3)
 	{
 	    //fprintf(stderr, "\tt>4 --> actually looking at it\n");
 	    if (frameEN - meanEN > SNR_THRESHOLD_VAD)
