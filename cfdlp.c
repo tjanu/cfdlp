@@ -24,6 +24,9 @@ void adapt_m(float * in, int N, float fsample, float * out);
 #define AXIS_LINEAR_MEL 2
 #define AXIS_LINEAR_BARK 3
 
+#define DEBUG_VAD 0
+#define DEBUG_WIENER 0
+
 char *infile = NULL;
 char *outfile = NULL;
 char *printfile = NULL;
@@ -31,7 +34,7 @@ int Fs = 8000;
 int do_gain_norm = 1;
 int do_spec = 0;
 int skip_bands = 0;
-int axis = 0;
+int axis = AXIS_BARK;
 float * dctm = NULL;
 float *LOOKUP_TABLE = NULL;
 int nbits_log = 14;
@@ -183,11 +186,11 @@ void fdither( float *x, int N, int scale )
     for ( int i = 0; i < N; i++ )
     {
 	float r = ((float) rand())/RAND_MAX;
-	x[i] += round(scale*(2*r-1));
+	x[i] += round(scale*2*r-1);
     }
 }
 
-void sub_mean( short *x, int N ) 
+void sub_mean( float *x, int N ) 
 {
     float sum = 0.;
     for ( int i = 0; i < N; i++ )
@@ -283,7 +286,14 @@ float * general_hamming(int N, float alpha)
 // Function to implement the hann window
 float * hann(int N)
 {
-    return general_hamming(N, 0.5);
+    float *x  = (float *) MALLOC(N * sizeof(float) );
+    for (int i = 0; i < N+2; i++) {
+	if (i > 0 && i < N + 1) { // matlab has no zeroes at the beginning/end for hanning, only for hann (?!)
+	    float temp = ((float)i) / (N+1);
+	    x[i-1] = 0.5 * (1. - cos(2 * pi * temp));
+	}
+    }
+    return x;
 }
 
 // Function to implement Hamming Window
@@ -388,15 +398,21 @@ void barkweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int *nb
     float step_barks = nyqbark/(*nbands - 1);
     float *binbarks = (float *) MALLOC(nfreqs*sizeof(float));
 
+//    FILE *bgen = fopen("bankgen.txt", "a");
+    //fprintf(bgen, "Binbarks (%d entries):\n", nfreqs);
+
     // Bark frequency of every bin in FFT
     for ( int i = 0; i < nfreqs; i++ )
     {
 	binbarks[i] = hz2bark(((float)i*(Fs/2))/(nfreqs-1));
+//	fprintf(bgen, "\t%g\n", binbarks[i]);
     }
+    //fprintf(bgen, "\n");
 
     for ( int i = 0; i < *nbands; i++ )
     {
 	float f_bark_mid = i*step_barks;
+	//fprintf(bgen, "Creating weights for filter %d: mid=%g, a=%g\n", i, f_bark_mid, 1.);
 	for ( int j = 0; j < nfreqs; j++ )
 	{
 	    wts[i*nfreqs+j] = exp(-0.5*pow(binbarks[j]-f_bark_mid,2));
@@ -406,6 +422,7 @@ void barkweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int *nb
     // compute frequency range where each filter exceeds dB threshold
     float lin = pow(10,-dB/20);
 
+    //fprintf(bgen, "adjusting to dB threshold\n");
     for ( int i = 0; i < *nbands; i++ )
     {
 	int j = 0;
@@ -414,7 +431,13 @@ void barkweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int *nb
 	j = nfreqs-1;
 	while ( wts[i*nfreqs+(j--)] < lin );
 	indices[i*2+1] = j+1;
+	//fprintf(bgen, "\tFilter %d: from %d to %d\n", i, indices[i*2], indices[i*2+1]);
+	//fprintf(bgen, "\tweights:\n");
+	//for (int dbg = indices[2*i]; dbg < indices[2*i+1]+1; dbg++) {
+	//    fprintf(bgen, "\t\t%g\n", wts[i*nfreqs+dbg]);
+	//}
     }
+    //fclose(bgen);
 
     FREE(binbarks);
 }
@@ -594,11 +617,26 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     // DEBUG
     //fprintf(stderr, "hlpc_wiener: wlen=%d, SP=%g, N=%d, orig_len=%d, order=%d, len=%d\n", wlen, SP, N, orig_len, order, len);
 
+#if DEBUG_WIENER
+    FILE *wiener = fopen("wiener_dbg.txt", "a");
+    fprintf(wiener, "hlpc_wiener called for vector of length %d (--> FFT length=%d), order %d, original signal length was %d, and I have %d VAD indices\n", len, N, order, orig_len, Nindices);
+    fprintf(wiener, "VAD indices:\n");
+    for (int i = 0; i < Nindices; i++) {
+	fprintf(wiener, "\t%d\n", vadindices[i]);
+    }
+    fprintf(wiener, "\n");
+
+    fprintf(wiener, "Signal vector:\n");
+#endif
+
     double *Y = (double *)MALLOC(N * sizeof(double));
     for (int n = 0; n < N; n++)
     {
 	if (n < len)
 	{
+#if DEBUG_WIENER
+	    fprintf(wiener, "\t%g\n", y[n]);
+#endif
 	    Y[n] = y[n];
 	}
 	else
@@ -611,11 +649,25 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     fftw_plan plan = fftw_plan_dft_r2c_1d(N, Y, ENV_cmplx, FFTW_ESTIMATE);
     fftw_execute(plan);
     fftw_destroy_plan(plan);
+#if DEBUG_WIENER
+    fprintf(wiener, "FFT of signal (%d entries):\n", N);
+    for (int i = 0; i < N; i++) {
+	fprintf(wiener, "\t%g + %gi\n", creal(ENV_cmplx[i]), cimag(ENV_cmplx[i]));
+    }
+    fprintf(wiener, "\n");
+    fprintf(wiener, "Time-domain Envelope (%d entries):\n", orig_len);
+#endif
     float *ENV = (float *) MALLOC(orig_len * sizeof(float));
     for (int i = 0; i < orig_len; i++)
     {
 	ENV[i] = (float)cabs(ENV_cmplx[i]) * (float)cabs(ENV_cmplx[i]);
+#if DEBUG_WIENER
+	fprintf(wiener, "\t%g\n", ENV[i]);
+#endif
     }
+#if DEBUG_WIENER
+    fprintf(wiener, "\n");
+#endif
 
     // DEBUG
     //static int framenum = 0;
@@ -634,6 +686,17 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     int envframes = 0;
     int overlap = wlen - (int)round((float)wlen * SP);
     float *fftframes = fconstruct_frames(&ENV, &envlen, wlen, overlap, &envframes);
+#if DEBUG_WIENER
+    fprintf(wiener, "Envelope chopped into %d frames of length %d, overlap=%d:\n", envframes, wlen, overlap);
+    for (int f = 0; f < envframes; f++) {
+	fprintf(wiener, "Frame %d:", f);
+	for (int n = 0; n < wlen; n++) {
+	    fprintf(wiener, " %g", fftframes[f * wlen + n]);
+	}
+	fprintf(wiener, "\n");
+    }
+    fprintf(wiener, "\n");
+#endif
 
     float *X = (float *)MALLOC(envframes * wlen * sizeof(float));
     float *Pn = (float *)MALLOC(wlen * sizeof(float));
@@ -653,6 +716,13 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     for (int i = 0; i < wlen; i++) {
 	Pn[i] /= Nindices;
     }
+#if DEBUG_WIENER
+    fprintf(wiener, "Average noise frame Pn:\n");
+    for (int i = 0; i < wlen; i++) {
+	fprintf(wiener, "\t%g\n", Pn[i]);
+    }
+    fprintf(wiener, "\n");
+#endif
 
     // DEBUG
     //char namebufpn[512];
@@ -670,16 +740,29 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 	    float noisy_sample = fftframes[f * wlen + i];
 	    float gamma = noisy_sample / Pn[i];
 	    float zeta = 0.;
+#if DEBUG_WIENER
+	    fprintf(wiener, "Reestimating sample %d of frame %d, noisy_sample=%g, gamma=%g\n", i, f, noisy_sample, gamma);
+#endif
 	    if (f > 0)
 	    {
 		zeta = wiener_alpha * X[(f-1) * wlen + i] / Pn[i] + (1 - wiener_alpha) * (gamma - 1);
+#if DEBUG_WIENER
+		fprintf(wiener, "\tf > 0 --> zeta(=%g) = wiener_alpha(=%g) * X[(f-1) * wlen(=%d) + i(=%d)](=%g) / Pn[i](=%g) + (1 - wiener_alpha) * (gamma(=%g) - 1)\n", zeta, wiener_alpha, wlen, i, X[(f-1) * wlen + i], Pn[i], gamma);
+#endif
 	    }
 	    else
 	    {
 		zeta = (1-wiener_alpha) * (gamma - 1);
+#if DEBUG_WIENER
+		fprintf(wiener, "\tt <= 0 -> zeta(=%g) = (1 - wiener_alpha(=%g)) * (gamma(=%g) - 1)\n", zeta, wiener_alpha, gamma);
+#endif
 	    }
 	    float G = zeta / (1 + zeta); // wiener filter gain
 	    X[f * wlen + i] = G * G * noisy_sample; // obtain clean value
+#if DEBUG_WIENER
+	    fprintf(wiener, "\tG(=%g) = zeta(=%g) / (1 + zeta)\n", G, zeta);
+	    fprintf(wiener, "\tX[f(=%d) * wlen(=%d) + i(=%d)](=%g) + G(=%g) * G * noisy_sample(=%g)\n", f, wlen, i, X[f * wlen + i], G, noisy_sample);
+#endif
 	}
     }
 
@@ -702,6 +785,9 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     memset(ENV_output, 0, MAX(orig_len, siglen) * sizeof(float));
     float *inv_win = (float *)MALLOC(siglen * sizeof(float));
     memset(inv_win, 0, siglen * sizeof(float));
+#if DEBUG_WIENER
+    fprintf(wiener, "OverlapAdd for signal of length %d with shiftwidth %d:\n", siglen, shiftwidth);
+#endif
     for (int i = 0; i < envframes; i++)
     {
 	int start = i * shiftwidth;
@@ -709,12 +795,19 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 	for (int j = 0; j < wlen; j++) {
 	    ENV_output[start + j] += x[j];
 	    inv_win[start + j] += 1;
+#if DEBUG_WIENER
+	    fprintf(wiener, "\tENV_output[start(=(i[=%d] * shiftwidth[=%d])(=%d)) + j(=%d)] += x[j(=%d)](=%g) = %g\n", i, shiftwidth, start, j, j, x[j], ENV_output[start + j]);
+	    fprintf(wiener, "\tinv_win[start + j] += 1 = %g\n", inv_win[start + j]);
+#endif
 	}
 //	for (int j = start; j < start + wlen; j++) {
 //	    ENV_output[j] += x[j-start];
 //	    inv_win[j] += 1;
 //	}
     }
+#if DEBUG_WIENER
+    fprintf(wiener, "ENV_output / inv_win:\n");
+#endif
     for (int i = 0; i < MAX(orig_len, siglen); i++)
     {
 //	if (isnan(ENV_output[i])) {
@@ -725,10 +818,21 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 	    if (inv_win != 0) {
 		ENV_output[i] /= inv_win[i];
 	    } else { fprintf(stderr, "inv_win[%d] is zero?!\n", i); }
+#if DEBUG_WIENER
+	    fprintf(wiener, "\t%d: %g / %g = %g\n", i, ENV_output[i] * inv_win[i], inv_win[i], ENV_output[i]);
+#endif
 	}
 	else
 	{
+#if DEBUG_WIENER
+	    if (i == siglen) {
+		fprintf(wiener, "Envelope enlarged by these samples:\n");
+	    }
+#endif
 	    ENV_output[i] = ENV[i];
+#if DEBUG_WIENER
+	    fprintf(wiener, "\t%g\n", ENV_output[i]);
+#endif
 	}
 //	if (isnan(ENV_output[i])) {
 //	    fprintf(stderr, "ENV_output[%d] is nan after normalization!\n", i);
@@ -782,7 +886,6 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     //    fprintf(fd, "%g ", R[i]);
     //}
     //fclose(fd);
-
     for ( int n = 0; n < N; n++ )
     {
 	R[n] /= N;
@@ -797,7 +900,18 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     //}
     //fclose(fd);
 
+#if DEBUG_WIENER
+    fprintf(wiener, "Calling levinson...\n");
+#endif
     levinson(order, R, poles);
+#if DEBUG_WIENER
+    fprintf(wiener, "Got %d poles:\n", order+1);
+    for (int i = 0; i <= order; i++) {
+	fprintf(wiener, "\t%g\n", poles[i]);
+    }
+    fprintf(wiener, "\n");
+    fclose(wiener);
+#endif
 
     FREE(Y);
     FREE(ENV_cmplx);
@@ -811,7 +925,7 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     FREE(R);
 }
 
-int *check_VAD(short *x, int N, int Fs, int *Nindices)
+int *check_VAD(float *x, int N, int Fs, int *Nindices)
 {
     int NB_FRAME_THRESHOLD_LTE = 10;
     float LAMBDA_LTE = 0.97;
@@ -834,13 +948,29 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
     float *w = hann(flen);
     float SP = 0.4;
 
-    short *copy = MALLOC(sizeof(short) * N);
-    memcpy(copy, x, sizeof(short) * N);
+    float *copy = MALLOC(sizeof(float) * N);
+    memcpy(copy, x, sizeof(float) * N);
     int Ncopy = N;
     int Nframes = 0;
     int overlap = flen - (int)round((float)flen * SP);
-    int add_samp = 0;
-    short *x_fr = sconstruct_frames(&copy, &Ncopy, flen, overlap, &Nframes, &add_samp);
+    float *x_fr = fconstruct_frames(&copy, &Ncopy, flen, overlap, &Nframes);
+
+#if DEBUG_VAD
+    FILE *vadcheck = fopen("vadcheck.txt", "a");
+
+    fprintf(vadcheck, "Used window:\n");
+    for (int i = 0; i < flen; i++) {
+	fprintf(vadcheck, "%g\n", w[i]);
+    }
+    fprintf(vadcheck, "\n");
+    for (int f = 0; f < Nframes; f++) {
+	fprintf(vadcheck, "Signal frame %d\n", f);
+	for (int i = 0; i < flen; i++) {
+	    fprintf(vadcheck, "\t%g\n", x_fr[f * flen + i]);
+	}
+    }
+#endif
+
     for (int f = 0; f < Nframes; f++)
     {
 	for (int n = 0; n < flen; n++)
@@ -849,6 +979,16 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
 	}
     }
 
+#if DEBUG_VAD
+    for (int f = 0; f < Nframes; f++) {
+	fprintf(vadcheck, "Windowed frame %d\n", f);
+	for (int i = 0; i < flen; i++) {
+	    fprintf(vadcheck, "\t%g\n", x_fr[f * flen + i]);
+	}
+    }
+    fprintf(vadcheck, "\n");
+#endif
+
     int *indices = MALLOC(sizeof(int) * Nframes);
     *Nindices = 0;
 
@@ -856,63 +996,117 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
     //fprintf(stderr, "flen=%d, olap=%d, Nframes=%d, N=%d, padded N=%d\n", flen, overlap, Nframes, N, Ncopy);
     for (int t = 0; t < Nframes; t++)
     {
-	short *x_cur = x_fr + t * flen;
+	float *x_cur = x_fr + t * flen;
 	float lambdaLTE = LAMBDA_LTE;
 	if (t < NB_FRAME_THRESHOLD_LTE - 1)
 	{
 	    lambdaLTE = 1. - (1. / (float)(t+1));
 	}
-	float sum = 0.;
+#if DEBUG_VAD
+	fprintf(vadcheck, "Checking frame %d, lambdaLTE=%g\n", t, lambdaLTE);
+#endif
+
+	double sum = 0.;
 	for (int i = flen - 80; i < flen; i++)
 	{
 	    sum += x_cur[i] * x_cur[i];
 	}
-	float frameEN = 0.5 + 16 / (log(2)) * (log((64 + sum) / 64.));
+#if DEBUG_VAD
+	fprintf(vadcheck, "\tframeEN = 0.5 + 16 / (log(2)) * (log((64 + sum[=%g]) / 64)[=%g])\n", sum, (64 + sum)/64);
+#endif
+	double frameEN = 0.5 + 16 / (log(2.)) * (log((64. + sum) / 64.));
+
+#if DEBUG_VAD
+	fprintf(vadcheck, "\tframeEN=%g\n", frameEN);
+#endif
+
 	//fprintf(stderr, "\tt=%d: lambdaLTE=%g, sum=%g, frameEN=%g, meanEN=%g\n", t, lambdaLTE, sum, frameEN, meanEN);
 	if ((frameEN - meanEN) < SNR_THRESHOLD_UPD_LTE || t < MIN_FRAME - 1)
 	{
+#if DEBUG_VAD
+	    fprintf(vadcheck, "\tframeEN - meanEN < SNR_THRESHOLD_UPD_LTE || t < MIN_FRAME\n\t\t%g - %g < %g || %d < %d\n", frameEN, meanEN, (double)SNR_THRESHOLD_UPD_LTE, t, MIN_FRAME-1);
+#endif
 	    //fprintf(stderr, "\t(frameEN-meanEN)<SNR_THRESHOLD_UPD_LTE || t < MIN_FRAME\n");
 	    if (frameEN < meanEN || t < MIN_FRAME - 1)
 	    {
+#if DEBUG_VAD
+		fprintf(vadcheck, "\tframeEN < meanEN || t < MIN_FRAME\n\t\t%g < %g || %d < %d\n", frameEN, meanEN, t, MIN_FRAME-1);
+#endif
 		meanEN = meanEN + (1 - lambdaLTE) * (frameEN - meanEN);
+#if DEBUG_VAD
+		fprintf(vadcheck, "\tmeanEN=%g\n", meanEN);
+#endif
 		//fprintf(stderr, "\tframeEN < meanEN || t < MIN_FRAME --> meanEN=%g\n", meanEN);
 	    }
 	    else
 	    {
+#if DEBUG_VAD
+		fprintf(vadcheck, "\t!(frameEN < meanEN || t < MIN_FRAME)\n");
+#endif
 		meanEN = meanEN + (1 - lambdaLTEhigherE) * (frameEN - meanEN);
+#if DEBUG_VAD
+		fprintf(vadcheck, "\tmeanEN=%g\n", meanEN);
+#endif
 		//fprintf(stderr, "\t!(frameEN < meanEN || t < MIN_FRAME) --> meanEN=%g\n", meanEN);
 	    }
 	    if (meanEN < ENERGY_FLOOR)
 	    {
+#if DEBUG_VAD
+		fprintf(vadcheck, "\tmeanEN (%g) < ENERGY_FLOOR (%g) --> =\n", meanEN, (double)ENERGY_FLOOR);
+#endif
 		meanEN = ENERGY_FLOOR;
 		//fprintf(stderr, "\tmeanEN < ENERGY_FLOOR --> meanEN=%g\n", meanEN);
 	    }
 	}
 	if (t > 3)
 	{
+#if DEBUG_VAD
+	    fprintf(vadcheck, "\tt (%d) > 3\n", t);
+#endif
 	    //fprintf(stderr, "\tt>4 --> actually looking at it\n");
+#if DEBUG_VAD
+	    fprintf(vadcheck, "\tframeEN (%g) - meanEN (%g) (=%g) > SNR_THRESHOLD_VAD (%g)?\n", frameEN, meanEN, frameEN - meanEN, (double)SNR_THRESHOLD_VAD);
+#endif
 	    if (frameEN - meanEN > SNR_THRESHOLD_VAD)
 	    {
 		nbSpeechFrame++;
+#if DEBUG_VAD
+		fprintf(vadcheck, "\t\tYes -> nbSpeechFrame=%d\n", nbSpeechFrame);
+#endif
 		//fprintf(stderr, "\t\tframeEN-meanEN > SNR_THRESHOLD_VAD -> nbSpeechFrame++ (now %d)\n", nbSpeechFrame);
 	    }
 	    else
 	    {
+#if DEBUG_VAD
+		fprintf(vadcheck, "\t\tNo.\n");
+#endif
 		//fprintf(stderr, "\t\tframeEN-meanEN <= SNR_THRESHOLD_VAD\n");
 		if (nbSpeechFrame > MIN_SPEECH_FRAME_HANGOVER)
 		{
+#if DEBUG_VAD
+		    fprintf(vadcheck, "\t\tnbSpeechFrame (%d) > MIN_SPEECH_FRAME_HANGOVER (%d) -> hangOver = %d\n", nbSpeechFrame, MIN_SPEECH_FRAME_HANGOVER, HANGOVER);
+#endif
 		    hangOver = HANGOVER;
 		    //fprintf(stderr, "\t\tnbSpeechFrame > MIN_SPEECH_FRAME_HANGOVER --> hangOver=%d\n", hangOver);
 		}
 		nbSpeechFrame = 0;
+#if DEBUG_VAD
+		fprintf(vadcheck, "\t\treset nbSpeechFrame to 0\n");
+#endif
 		//fprintf(stderr, "\t\tReset nbSpeechFrame\n");
 		if (hangOver != 0)
 		{
 		    hangOver--;
+#if DEBUG_VAD
+		    fprintf(vadcheck, "\t\thangOver != 0 -> reduced by 1 to %d\n", hangOver);
+#endif
 		    //fprintf(stderr, "hangOver != 0 -> decreasing (now %d)\n", hangOver);
 		}
 		else
 		{
+#if DEBUG_VAD
+		    fprintf(vadcheck, "\t\tFound silence/noise frame at %d\n", t);
+#endif
 		    indices[(*Nindices)++] = t;
 		    //fprintf(stderr, "hangOver == 0 -> frame %d is non-speech frame number %d!\n", t, *Nindices);
 		}
@@ -924,6 +1118,9 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
 	    //fprintf(stderr, "t <= 4 --> considered non-speech frame number %d\n", *Nindices);
 	}
     }
+#if DEBUG_VAD
+    fclose(vadcheck);
+#endif
 
     FREE(w);
     FREE(x_fr);
@@ -931,13 +1128,21 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
     return indices;
 }
 
-float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
+float * fdlpfit_full_sig(float *x, int N, int Fs, int *Np)
 {
     int NNIS = 0;
     int* NIS = NULL;
     if (do_wiener)
     {
 	NIS = check_VAD(x, N, Fs, &NNIS);
+
+//	FILE *dbgfile = fopen("cnis.vad", "a");
+//	for (int i = 0; i < NNIS; i++) {
+//	    fprintf(dbgfile, "%d\n", NIS[i]);
+//	}
+//	fprintf(dbgfile, "\n");
+//	fclose(dbgfile);
+
 	// DEBUG
 	//fprintf(stderr, "\n\nVAD indices (%d)\n\n", NNIS);
 	//for (int i = 0; i < NNIS; i++) {
@@ -956,14 +1161,32 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 	y[n] = (double) x[n];
     }
 
+//    FILE *dctcheck = fopen("dct_dbg.txt", "a");
+//    fprintf(dctcheck, "Original signal (length=%d):\n", N);
+//    for (int n = 0; n < N; n++) {
+//	fprintf(dctcheck, "\t%g\n", y[n]);
+//    }
+
     fftw_plan plan = fftw_plan_r2r_1d(N, y, y, FFTW_REDFT10, FFTW_ESTIMATE);
     fftw_execute(plan);
     fftw_destroy_plan(plan);
+
+//    fprintf(dctcheck, "DCT (length=%d):\n", N);
+//    for (int n = 0; n < N; n++) {
+//	fprintf(dctcheck, "\t%g\n", y[n]);
+//    }
+
     for ( int n = 0; n < N; n++ )
     {
-	y[n] /= sqrt(2.0*N);
+        y[n] /= sqrt(2.0*N);
     }
     y[0] /= sqrt(2);
+
+//    fprintf(dctcheck, "Normalized DCT (length=%d):\n", N);
+//    for (int n = 0; n < N; n++) {
+//	fprintf(dctcheck, "\t%g\n", y[n]);
+//    }
+//    fclose(dctcheck);
 
     int fdlpwin = N;
 
@@ -973,8 +1196,8 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 	float lo_freq = 125.;
 	float hi_freq = 3800.;
 
-	int lo_offset = round(((float)N/((float)Fs/2.))*lo_freq);
-	int hi_offset = round(((float)N/((float)Fs/2))*hi_freq);
+	int lo_offset = round(((float)N/((float)Fs/2.))*lo_freq) - 1;
+	int hi_offset = round(((float)N/((float)Fs/2))*hi_freq) - 1;
 
 	y = y + lo_offset;
 	fdlpwin = hi_offset - lo_offset + 1;
@@ -1004,7 +1227,7 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 	    break;
     }
 
-    if (numbands != bank_nbands || fdlpwin != auditory_win_length) {
+    if (numbands != bank_nbands + skip_bands || fdlpwin != auditory_win_length) {
 	fprintf(stderr, "(Re)creating auditory filter bank (nbands or fdlpwin changed)\n");
 	if (orig_wts != NULL) {
 	    FREE(orig_wts);
@@ -1043,8 +1266,8 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 	orig_wts = wts;
 	orig_indices = indices;
 	if (skip_bands && bank_nbands > skip_bands) {
-	    wts = &orig_wts[skip_bands];
-	    indices = &orig_indices[skip_bands];
+	    wts = &orig_wts[skip_bands * fdlpwin];
+	    indices = &orig_indices[skip_bands * 2];
 	    bank_nbands -= skip_bands;
 	}
 	old_nbands = bank_nbands;
@@ -1063,17 +1286,18 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
     nbands = bank_nbands;
 
     fprintf(stderr, "Number of sub-bands = %d\n", nbands);	
+//    fprintf(stderr, "fdlpfit_full_sig: %d samples\n", fdlpwin);
     switch (axis)
     {
 	case AXIS_MEL:
-	    *Np = round(N/150);
+	    *Np = round((float)fdlpwin/100.);
 	    break;
 	case AXIS_BARK:
-	    *Np = round(N/200);
+	    *Np = round((float)fdlpwin/200.);
 	    break;
 	case AXIS_LINEAR_MEL:
 	case AXIS_LINEAR_BARK:
-	    *Np = round((indices[1] - indices[0]) / 12);
+	    *Np = round((float)(indices[1] - indices[0]) / 6.);
 	    break;
     }
     // DEBUG
@@ -1097,6 +1321,21 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 		y_filt[n] = 0;
 	    }
 	}
+//	FILE *fbank = fopen("filterbank.txt", "a");
+//	fprintf(fbank, "Filter (%s) used for band %d: Signal indices %d - %d\n", (axis == AXIS_BARK ? "bark" : (axis == AXIS_MEL ? "mel" : (axis == AXIS_LINEAR_BARK ? "lin-bark" : (axis == AXIS_LINEAR_MEL ? "lin-mel" : "unknown")))), i, indices[2*i], indices[2*i+1]);
+//	fprintf(fbank, "Original signal part:\n");
+//	for (int dbg = 0; dbg < Nsub; dbg++) {
+//	    fprintf(fbank, "\t%g\n", y[indices[2*i]+dbg]);
+//	}
+//	fprintf(fbank, "Weights:\n");
+//	for (int dbg = 0; dbg < Nsub; dbg++) {
+//	    fprintf(fbank, "\t%g\n", wts[i*fdlpwin + indices[2*i]+dbg]);
+//	}
+//	fprintf(fbank, "tmpx:\n");
+//	for (int dbg = 0; dbg < Nsub; dbg++) {
+//	    fprintf(fbank, "\t%g\n", y_filt[dbg]);
+//	}
+//	fclose(fbank);
 
 	// DEBUG
 	//char outname[512];
@@ -1529,12 +1768,13 @@ void audspec(float **bands, int *nbands, int nframes)
     *nbands = nfilts;
 }
 
-void compute_fdlp_feats( short *x, int N, int Fs, int* nceps, float **feats, int nfeatfr, int numframes, int *dim)
+void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int nfeatfr, int numframes, int *dim)
 {
     int flen=0.025*Fs;   // frame length corresponding to 25ms
     int fhop=0.010*Fs;   // frame overlap corresponding to 10ms
     int fdlplen = N;
     int fnum = floor((N-flen)/fhop)+1;
+    //int fnum = floor((N-flen)/fhop); // bug in feacalc will result in 1 frame less for 8kHzs data than for 16kHz :-/
 
     // What's the last sample that feacalc will consider?
     int send = (fnum-1)*fhop + flen;
@@ -1747,7 +1987,7 @@ int main(int argc, char **argv)
     fill_icsi_log_table(nbits_log,LOOKUP_TABLE); 
 
     int N;
-    short *signal = readsignal_file(infile, &N);
+    float *signal = readsignal_file(infile, &N);
     int Nsignal = N;
 
     fprintf(stderr, "Input file = %s; N = %d samples\n", infile, N);
@@ -1759,7 +1999,12 @@ int main(int argc, char **argv)
     int fstep = 0.010*Fs; 
 
     int fnum = floor(((float)N-fwin)/fstep)+1;
+    //int fnum = floor(((float)N-fwin)/fstep); // stupid bug in feacalc...
     N = (fnum-1)*fstep + fwin;
+
+    //fprintf(stderr, "Read %d samples, keeping %d\n", Nsignal, N);
+
+    Nsignal = N;
 
     // DEBUG
     //FILE *fd = fopen("speech_signal.txt", "w");
@@ -1773,7 +2018,10 @@ int main(int argc, char **argv)
     int fdlpolap = 0.020*Fs;  
     int nframes;
     int add_samp;
-    short *frames = sconstruct_frames(&signal, &N, fdlpwin, fdlpolap, &nframes, &add_samp);
+    float *frames = fconstruct_frames(&signal, &N, fdlpwin, fdlpolap, &nframes);
+    add_samp = N - Nsignal;
+
+    //fprintf(stderr, "Created %d frames of %d samples each, overlap %d\n", nframes, fdlpwin, fdlpolap);
 
     // DEBUG
     //fd = fopen("speech_frames.txt", "w");
@@ -1797,11 +2045,12 @@ int main(int argc, char **argv)
     for ( int f = 0; !stop_before && f < nframes; f++ )
     {
 	int local_size = fdlpwin;
+	//fprintf(stderr, "f=%d: local_size=%d, truncate_last=%d, Nsignal - f * fdlpwin = %d, fdlpwin=%d\n", f, local_size, truncate_last, Nsignal - f * fdlpwin, fdlpwin);
 	if (truncate_last && Nsignal - f * fdlpwin < fdlpwin)
 	{
 	    local_size = Nsignal - f * fdlpwin;
 	}
-	short *xwin = frames+f*fdlpwin;
+	float *xwin = frames+f*fdlpwin;
 	if (f < nframes - 1 && Nsignal - (f + 1) * fdlpwin < 0.2 * Fs)
 	{
 	    // have at least .2 seconds in the last frame or just enlarge the second-to-last frame
@@ -1813,11 +2062,12 @@ int main(int argc, char **argv)
 	    stop_before = 1;
 	    xwin = signal + (Nsignal - local_size);
 	}
-	sdither( xwin, local_size, 1 );
+	fdither( xwin, local_size, 1 );
 	sub_mean( xwin, local_size );
 
 	int nfeatfr = (int)floor((local_size - fwin)/fstep)+1;
 
+	//fprintf(stderr, "Calling fdlp_env_comp with window of length %d\n", local_size);
 	if (feats == NULL)
 	{
 	    compute_fdlp_feats( xwin, local_size, Fs, &nceps, &feats, nfeatfr, nframes, &dim );
