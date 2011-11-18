@@ -53,9 +53,18 @@ int do_wiener = 0;
 float wiener_alpha = 0.9;
 int truncate_last = 0;
 
+char *vadfile = NULL;
+char speechchar = '1';
+char nspeechchar = '0';
+int have_vadfile = 0;
+int vad_grace = 2;
+int *vad_labels = NULL;
+int num_vad_labels = 0;
+int vad_label_start = 0;
+
 void usage()
 {
-    fatal("\n USAGE : \n[cfdlp -i <str> [-o <str> | -print <str>] (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n -limit-range <flag> - Limit DCT-spectrum to 125-3800Hz before FDPLP processing (0)\n -apply-wiener <flag> - Apply Wiener filter (helps against additive noise) (0)\n -wiener-alpha <float> - sets the parameter alpha of the wiener filter (0.9 for modulation and 0.1 for spectral features)\n -fdplpwin <sec> - Length of FDPLP window in sec (better for reverberant environments when gain normalization is used: 10) (5)\n -truncate-last <flag> - truncate last frame if number of samples does not fill the entire fdplp window (speeds up computation but also changes numbers) (0)\n -skip-bands <int n> - Whether or not to skip the first n bands when computing the features (useful value for telephone data: 2) (0)");
+    fatal("\n USAGE : \n[cfdlp -i <str> [-o <str> | -print <str>] (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n -limit-range <flag> - Limit DCT-spectrum to 125-3800Hz before FDPLP processing (0)\n -apply-wiener <flag> - Apply Wiener filter (helps against additive noise) (0)\n -wiener-alpha <float> - sets the parameter alpha of the wiener filter (0.9 for modulation and 0.1 for spectral features)\n -fdplpwin <sec> - Length of FDPLP window in sec (better for reverberant environments when gain normalization is used: 10) (5)\n -truncate-last <flag> - truncate last frame if number of samples does not fill the entire fdplp window (speeds up computation but also changes numbers) (0)\n -skip-bands <int n> - Whether or not to skip the first n bands when computing the features (useful value for telephone data: 2) (0)\n -vadfile <str> - name of the VAD file to read in. Has to be ascii, one char per frame (not given -> energy-based ad-hoc VAD)\n -speechchar <char> - the char representing speech in the VAD file ('1')\n -nonspeechchar <char> - the char representing non-speech in the VAD file ('0')\n -vad-grace <int> - maximum difference between number of frames in VAD file compared to how many are computed. If there are less frames in the VAD file, the last VAD label gets repeated. (2)");
 }
 
 void parse_args(int argc, char **argv)
@@ -78,6 +87,9 @@ void parse_args(int argc, char **argv)
 	else if ( strcmp(argv[i], "-sr") == 0 )
 	{
 	    Fs = atoi(argv[++i]);
+	    if (Fs != 8000 && Fs != 16000) {
+		fatal("Unsupported sample rate! Only 8000 and 16000 are supported.");
+	    }
 	}
 	else if ( strcmp(argv[i], "-gn") == 0 )
 	{
@@ -140,6 +152,22 @@ void parse_args(int argc, char **argv)
 	else if ( strcmp(argv[i], "-skip-bands") == 0)
 	{
 	    skip_bands = atoi(argv[++i]);
+	}
+	else if ( strcmp(argv[i], "-vadfile") == 0)
+	{
+	    vadfile = argv[++i];
+	}
+	else if ( strcmp(argv[i], "-speechchar") == 0)
+	{
+	    speechchar = argv[++i][0];
+	}
+	else if ( strcmp(argv[i], "-nonspeechchar") == 0)
+	{
+	    nspeechchar = argv[++i][0];
+	}
+	else if ( strcmp(argv[i], "-vad-grace") == 0)
+	{
+	    vad_grace = atoi(argv[++i]);
 	}
 	else
 	{
@@ -925,6 +953,26 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     FREE(R);
 }
 
+int *read_VAD(int N, int Fs, int* Nindices)
+{
+    int flen = 0.025*Fs;
+    int fhop = 0.010*Fs;
+    int fnum = floor((N-flen)/fhop)+1;
+
+    int *indices = MALLOC(sizeof(int) * fnum);
+    *Nindices = 0;
+
+    if (vad_label_start + fnum > num_vad_labels) {
+	fatal("Not enough VAD labels left?!");
+    }
+    for (int i = 0; i < fnum; i++) {
+	if (vad_labels[vad_label_start + i] == 0) {
+	    indices[(*Nindices)++] = i;
+	}
+    }
+    return indices;
+}
+
 int *check_VAD(float *x, int N, int Fs, int *Nindices)
 {
     int NB_FRAME_THRESHOLD_LTE = 10;
@@ -948,9 +996,19 @@ int *check_VAD(float *x, int N, int Fs, int *Nindices)
     float *w = hann(flen);
     float SP = 0.4;
 
-    float *copy = MALLOC(sizeof(float) * N);
-    memcpy(copy, x, sizeof(float) * N);
-    int Ncopy = N;
+    int Ncopy = (Fs == 16000 ? N / 2 : N);
+    float *copy = MALLOC(sizeof(float) * Ncopy);
+    if (Fs == 8000)
+    {
+	memcpy(copy, x, sizeof(float) * N);
+    }
+    else
+    {
+	// resample...
+	for (int i = 0; i < Ncopy; i++) {
+	    copy[i] = x[i*2];
+	}
+    }
     int Nframes = 0;
     int overlap = flen - (int)round((float)flen * SP);
     float *x_fr = fconstruct_frames(&copy, &Ncopy, flen, overlap, &Nframes);
@@ -1134,7 +1192,14 @@ float * fdlpfit_full_sig(float *x, int N, int Fs, int *Np)
     int* NIS = NULL;
     if (do_wiener)
     {
-	NIS = check_VAD(x, N, Fs, &NNIS);
+	if (have_vadfile)
+	{
+	    NIS = read_VAD(N, Fs, &NNIS);
+	}
+	else
+	{
+	    NIS = check_VAD(x, N, Fs, &NNIS);
+	}
 
 //	FILE *dbgfile = fopen("cnis.vad", "a");
 //	for (int i = 0; i < NNIS; i++) {
@@ -2007,6 +2072,34 @@ int main(int argc, char **argv)
 
     Nsignal = N;
 
+    // read in VAD if we have to
+    if (vadfile != NULL) {
+	num_vad_labels = fnum;
+	int num_read_labels = lenchars_file(vadfile);
+	char *labels = readchars_file(vadfile, 0, &num_read_labels);
+	if (labels[num_read_labels - 1] == '\n') {
+	    num_read_labels--;
+	}
+	fprintf(stderr, "Number of frames to calculate: %d, number of labels in file: %d\n", fnum, num_read_labels);
+	vad_labels = (int *)MALLOC(num_vad_labels * sizeof(int));
+	for (int i = 0; i < num_vad_labels; i++) {
+	    if (i < num_read_labels) {
+		vad_labels[i] = (labels[i] == speechchar ? 1 : (labels[i] == nspeechchar ? 0 : 2));
+		if (vad_labels[i] == 2) {
+		    fatal("VAD file had unspecified character in it!");
+		}
+	    } else {
+		if (i < num_vad_labels - vad_grace) {
+		    fatal("VAD file contains too few labels.");
+		}
+		vad_labels[i] = vad_labels[num_read_labels - 1];
+	    }
+	}
+	FREE(labels);
+	have_vadfile = 1;
+	vad_label_start = 0;
+    }
+
     // DEBUG
     //FILE *fd = fopen("speech_signal.txt", "w");
     //for (int i = 0; i < N; i++) {
@@ -2083,6 +2176,7 @@ int main(int argc, char **argv)
 	}
 	printf("\n"); 
 	nfeatfr_calculated += nfeatfr;
+	vad_label_start = nfeatfr_calculated;
 
 	fprintf(stderr, "%f s\n",toc());
     }
@@ -2101,6 +2195,9 @@ int main(int argc, char **argv)
     }
 
     // Free the heap
+    if (vad_labels != NULL) {
+	FREE(vad_labels);
+    }
     FREE(signal);
     FREE(frames);
     FREE(feats);
