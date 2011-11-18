@@ -1534,6 +1534,7 @@ void spec2cep4energy(float * frames, int fdlpwin, int nframes, int ncep, float *
 	}
     }
     float *feats = (float *) MALLOC(nframes*ncep*sizeof(float));;
+    memset(feats, 0, nframes * ncep * sizeof(float));
     for ( int f = 0; f < nframes; f++ )
     {
 	float *frame = frames + f*fdlpwin;
@@ -2046,18 +2047,21 @@ int main(int argc, char **argv)
     {
 	int local_size = fdlpwin;
 	//fprintf(stderr, "f=%d: local_size=%d, truncate_last=%d, Nsignal - f * fdlpwin = %d, fdlpwin=%d\n", f, local_size, truncate_last, Nsignal - f * fdlpwin, fdlpwin);
-	if (truncate_last && Nsignal - f * fdlpwin < fdlpwin)
+	if (truncate_last && Nsignal - f * (fdlpwin - fdlpolap) < fdlpwin)
 	{
-	    local_size = Nsignal - f * fdlpwin;
+	    local_size = Nsignal - f * (fdlpwin - fdlpolap);
 	}
 	float *xwin = frames+f*fdlpwin;
-	if (f < nframes - 1 && Nsignal - (f + 1) * fdlpwin < 0.2 * Fs)
+	if (f < nframes - 1 && Nsignal - (f + 1) * (fdlpwin - fdlpolap) < 0.2 * Fs)
 	{
 	    // have at least .2 seconds in the last frame or just enlarge the second-to-last frame
-	    local_size = Nsignal + fdlpolap - f * fdlpwin;
+	    //fprintf(stderr, "Resizing because of last-frame-constraints (< 0.2 * Fs): local_size = %d\n", local_size);
+	    local_size = Nsignal + fdlpolap - f * (fdlpwin - fdlpolap);
+	    //fprintf(stderr, "Resized: local_size = %d\n", local_size);
 	    if (local_size > Nsignal)
 	    {
 		local_size = Nsignal;
+		//fprintf(stderr, "local_size was > Nsignal-> local_size = %d\n", local_size);
 	    }
 	    stop_before = 1;
 	    xwin = signal + (Nsignal - local_size);
@@ -2082,6 +2086,8 @@ int main(int argc, char **argv)
 
 	fprintf(stderr, "%f s\n",toc());
     }
+
+    //fprintf(stderr, "fnum=%d; nfeatfr_calculated=%d\n", fnum, nfeatfr_calculated);
 
     if (outfile)
     {
