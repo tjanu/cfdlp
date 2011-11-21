@@ -24,6 +24,18 @@ void adapt_m(float * in, int N, float fsample, float * out);
 #define AXIS_LINEAR_MEL 2
 #define AXIS_LINEAR_BARK 3
 
+// finally get rid of all those magic numbers...
+#define DEFAULT_SHORTTERM_WINLEN_MS 0.025
+#define DEFAULT_SHORTTERM_WINSHIFT_MS 0.010
+#define DEFAULT_SHORTTERM_SHIFT_PERCENTAGE 0.4
+#define DEFAULT_FDLPWIN_SHIFT_MS 0.020
+#define FDLPWIN_SEC2SHORTTERMMULT_FACTOR 40
+#define DEFAULT_LONGTERM_TRAP_FRAMECTX 10
+#define DEFAULT_LONGTERM_WINLEN_MS 0.2
+
+#define DEFAULT_SHORTTERM_NCEPS 13
+#define DEFAULT_LONGTERM_NCEPS 14
+
 char *infile = NULL;
 char *outfile = NULL;
 char *printfile = NULL;
@@ -59,24 +71,31 @@ int *vad_labels = NULL;
 int num_vad_labels = 0;
 int vad_label_start = 0;
 
+int shortterm_do_delta = 1;
+int shortterm_do_ddelta = 1;
+int longterm_do_static = 1;
+int longterm_do_dynamic = 1;
+int num_cepstral_coeffs = -1;
+
 void usage()
 {
     fatal("\nFDLP Feature Extraction software\n"
 	    "USAGE:\n"
-	    "cfdlp [options] -i <str> [-o <str> | -print <str>]\n\n"
-	    "OPTIONS\n\n"
-	    " -h, --help\t\tPrint this help and exit\n\n"
-	    "IO options:\n\n"
+	    "cfdlp [options] -i <str> [-o <str> | -print <str>]\n"
+
+	    "\nOPTIONS\n\n"
+	    " -h, --help\t\tPrint this help and exit\n"
+	    "\nIO options:\n\n"
 	    " -i <str>\t\tInput file name. Only signed 16-bit little endian raw files are supported. REQUIRED\n"
 	    " -o <str>\t\tOutput file name for raw binary float output. Either this or -print is REQUIRED\n"
 	    " -print <str>\t\tOutput file name for ascii output, one frame per line. Either this or -o is REQUIRED\n"
-	    " -sr <str>\t\tInput samplerate in Hertz. Only 8000 and 16000 Hz are supported. (8000)\n\n"
+	    " -sr <str>\t\tInput samplerate in Hertz. Only 8000 and 16000 Hz are supported. (8000)\n"
 
-	    "Windowing options:\n\n"
+	    "\nWindowing options:\n\n"
 	    " -fdplpwin <sec>\tLength of FDPLP window in sec (better for reverberant environments when gain normalization is used: 10) (5)\n"
-	    " -truncate-last <flag>\ttruncate last frame if number of samples does not fill the entire fdplp window (speeds up computation but also changes numbers) (0)\n\n"
+	    " -truncate-last <flag>\ttruncate last frame if number of samples does not fill the entire fdplp window (speeds up computation but also changes numbers) (0)\n"
 
-	    "Feature generation options:\n\n"
+	    "\nFeature generation options:\n\n"
 	    " -gn <flag>\t\tGain Normalization (1) \n"
 	    " -limit-range <flag>\tLimit DCT-spectrum to 125-3800Hz before FDPLP processing (0)\n"
 	    " -axis <str>\t\tbark,mel,linear-mel,linear-bark (bark)\n"
@@ -85,15 +104,25 @@ void usage()
 	    "\t\t\t\t0: Long-term modulation features\n"
 	    "\t\t\t\t1: Short-term spectral features\n"
 	    " -spec <flag>\t\tAlternative legacy name for -feat\n"
-	    " -specgram <flag>\tSpectrogram output. If this option is given, -feat will have no effect and processing ends after spectrogram output. (0)\n\n"
+	    " -specgram <flag>\tSpectrogram output. If this option is given, -feat will have no effect and processing ends after spectrogram output. (0)\n"
+	    " -nceps <int>\t\tNumber of cepstral coefficients to use. (14 for modulation features, 13 for short-term features)\n"
+	    " -shortterm-mode <int>\tHow to construct a short-term feature frame. No effect if calculating modulation features. (3)\n"
+	    "\t\t\t\t0: Only include the <nceps> cepstral coefficients\n"
+	    "\t\t\t\t1: <nceps> cepstral coefficients + <nceps> first-order derivatives\n"
+	    "\t\t\t\t2: <nceps> cepstral coefficients + <nceps> second-order derivatives\n"
+	    "\t\t\t\t3: <nceps> cepstral coefficients + <nceps> first-order derivatives + <nceps> second-order derivatives\n"
+	    " -modulation-mode <int>\tHow to construct a long-term modulation feature frame. No effect if calculating short-term features. (2)\n"
+	    "\t\t\t\t0: Only include <nceps> statically compressed modulation coefficients per band\n"
+	    "\t\t\t\t1: Only include <nceps> dynamically compressed modulation coefficients per band\n"
+	    "\t\t\t\t2: <nceps> statically compressed modulation coefficients + <nceps> dynamically compressed modulation coefficients, per band\n"
 
-	    "Additive noise suppression options:\n\n"
+	    "\nAdditive noise suppression options:\n\n"
 	    " -apply-wiener <flag>\tApply Wiener filter (helps against additive noise) (0)\n"
 	    " -wiener-alpha <float>\tsets the parameter alpha of the wiener filter (0.9 for modulation and 0.1 for spectral features)\n"
 	    " -vadfile <str>\t\tname of the VAD file to read in. Has to be ascii, one char per frame (not given -> energy-based ad-hoc VAD)\n"
 	    " -speechchar <char>\tthe char representing speech in the VAD file ('1')\n"
 	    " -nonspeechchar <char>\tthe char representing non-speech in the VAD file ('0')\n"
-	    " -vad-grace <int>\tmaximum difference between number of frames in VAD file compared to how many are computed. If there are less frames in the VAD file, the last VAD label gets repeated. (2)"
+	    " -vad-grace <int>\tmaximum difference between number of frames in VAD file compared to how many are computed. If there are less frames in the VAD file, the last VAD label gets repeated. (2)\n"
 	    );
 }
 
@@ -136,6 +165,11 @@ void parse_args(int argc, char **argv)
 		)
 	{
 	    do_spec = atoi(argv[++i]);
+	    if (do_spec != 0 && do_spec != 1)
+	    {
+		fprintf(stderr, "Error: -feat: Unsupported feature type!\n");
+		usage();
+	    }
 	}
 	else if ( strcmp(argv[i], "-axis") == 0 )
 	{
@@ -207,6 +241,58 @@ void parse_args(int argc, char **argv)
 	{
 	    vad_grace = atoi(argv[++i]);
 	}
+	else if ( strcmp(argv[i], "-nceps") == 0)
+	{
+	    num_cepstral_coeffs = atoi(argv[++i]);
+	}
+	else if ( strcmp(argv[i], "-shortterm-mode") == 0)
+	{
+	    int shortterm_mode = atoi(argv[++i]);
+	    switch (shortterm_mode)
+	    {
+		case 0:
+		    shortterm_do_delta = 0;
+		    shortterm_do_ddelta = 0;
+		    break;
+		case 1:
+		    shortterm_do_delta = 1;
+		    shortterm_do_ddelta = 0;
+		    break;
+		case 2:
+		    shortterm_do_delta = 0;
+		    shortterm_do_ddelta = 1;
+		    break;
+		case 3:
+		    shortterm_do_delta = 1;
+		    shortterm_do_ddelta = 1;
+		    break;
+		default:
+		    fprintf(stderr, "Unsupported shortterm-mode parameter!\n");
+		    usage();
+	    }
+	}
+	else if ( strcmp(argv[i], "-modulation-mode") == 0)
+	{
+	    int modmode = atoi(argv[++i]);
+	    switch (modmode)
+	    {
+		case 0:
+		    longterm_do_static = 1;
+		    longterm_do_dynamic = 0;
+		    break;
+		case 1:
+		    longterm_do_static = 0;
+		    longterm_do_dynamic = 1;
+		    break;
+		case 2:
+		    longterm_do_static = 1;
+		    longterm_do_dynamic = 1;
+		    break;
+		default:
+		    fprintf(stderr, "Error: Unsupported modulation-mode parameter!\n");
+		    usage();
+	    }
+	}
 	else
 	{
 	    fprintf(stderr, "unknown arg: %s\n", argv[i]);
@@ -235,6 +321,11 @@ void parse_args(int argc, char **argv)
     {
 	fprintf(stderr, "Negative number of bands to skip given - how should that be implemented?!\n");
 	usage();
+    }
+
+    if (num_cepstral_coeffs == -1)
+    {
+	num_cepstral_coeffs = (do_spec == 0 ? DEFAULT_LONGTERM_NCEPS : DEFAULT_SHORTTERM_NCEPS);
     }
 }
 
@@ -653,8 +744,8 @@ void lpc( double *y, int len, int order, int compr, float *poles )
 
 void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int *vadindices, int Nindices)
 {
-    int wlen = round(0.025 * Fs);
-    float SP = 0.4;
+    int wlen = round(DEFAULT_SHORTTERM_WINLEN_MS* Fs);
+    float SP = DEFAULT_SHORTTERM_SHIFT_PERCENTAGE;
 
     int N = 2 * orig_len - 1;
 
@@ -793,8 +884,8 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 
 int *read_VAD(int N, int Fs, int* Nindices)
 {
-    int flen = 0.025*Fs;
-    int fhop = 0.010*Fs;
+    int flen = DEFAULT_SHORTTERM_WINLEN_MS * Fs;
+    int fhop = DEFAULT_SHORTTERM_WINSHIFT_MS * Fs;
     int fnum = floor((N-flen)/fhop)+1;
 
     int *indices = MALLOC(sizeof(int) * fnum);
@@ -829,9 +920,9 @@ int *check_VAD(float *x, int N, int Fs, int *Nindices)
     int hangOver = 0;
 
     // frame signal inte 25ms frames with 10ms shift
-    int flen = 0.025 * Fs;
+    int flen = DEFAULT_SHORTTERM_WINLEN_MS * Fs;
     float *w = hann(flen);
-    float SP = 0.4;
+    float SP = DEFAULT_SHORTTERM_SHIFT_PERCENTAGE;
 
     int Ncopy = (Fs == 16000 ? N / 2 : N);
     float *copy = MALLOC(sizeof(float) * Ncopy);
@@ -1213,10 +1304,11 @@ void spec2cep(float * frames, int fdlpwin, int nframes, int ncep, int nbands, in
 	}
     }
 
+    int dimmult = longterm_do_static + longterm_do_dynamic;
     for ( int f = 0; f < nframes; f++ )
     {
 	float *frame = frames + f*fdlpwin;
-	float *feat =  feats + f*2*ncep*nbands + band*2*ncep + offset;
+	float *feat =  feats + f*dimmult*ncep*nbands + band*dimmult*ncep + offset;
 	for ( int i = 0; i < ncep; i++ )
 	{
 	    feat[i] = 0;
@@ -1276,10 +1368,20 @@ void spec2cep4energy(float * frames, int fdlpwin, int nframes, int ncep, float *
 	    }
 	}
     }
-    float *del = deltas(feats, nframes,ncep,9);
-    float *tempdel = deltas(feats,nframes,ncep,5);
-    float *ddel = deltas(tempdel,nframes,ncep,5);
-    int dim = 3*ncep;
+    float *del = NULL;
+    if (shortterm_do_delta == 1)
+    {
+	del = deltas(feats, nframes,ncep,9);
+    }
+    float *ddel = NULL;
+    if (shortterm_do_ddelta == 1)
+    {
+	float *tempdel = deltas(feats,nframes,ncep,5);
+	ddel = deltas(tempdel,nframes,ncep,5);
+	FREE(tempdel);
+    }
+    int dimmult = 1 + shortterm_do_delta + shortterm_do_ddelta;
+    int dim = dimmult*ncep;
     for ( int f = 0; f < nframes; f++ )
     {
 	for (int cep = 0; cep < dim; cep++)
@@ -1288,7 +1390,7 @@ void spec2cep4energy(float * frames, int fdlpwin, int nframes, int ncep, float *
 	    {
 		final_feats[f*dim+cep]=feats[f*ncep+cep];
 	    }
-	    else if (cep < 2*ncep)
+	    else if (cep < 2*ncep && shortterm_do_delta == 1)
 	    {
 		final_feats[f*dim+cep]=del[f*ncep+cep-ncep];
 	    }
@@ -1299,9 +1401,14 @@ void spec2cep4energy(float * frames, int fdlpwin, int nframes, int ncep, float *
 	}
     }	
     FREE(feats);
-    FREE(tempdel);
-    FREE(del);
-    FREE(ddel);
+    if (del != NULL)
+    {
+	FREE(del);
+    }
+    if (ddel != NULL)
+    {
+	FREE(ddel);
+    }
 }
 
 float * fft2melmx(int nfft, int *nbands)
@@ -1439,17 +1546,17 @@ void audspec(float **bands, int *nbands, int nframes)
 
 void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int nfeatfr, int numframes, int *dim)
 {
-    int flen=0.025*Fs;   // frame length corresponding to 25ms
-    int fhop=0.010*Fs;   // frame overlap corresponding to 10ms
+    int flen= DEFAULT_SHORTTERM_WINLEN_MS * Fs;   // frame length corresponding to 25ms
+    int fhop= DEFAULT_SHORTTERM_WINSHIFT_MS * Fs;   // frame overlap corresponding to 10ms
     int fdlplen = N;
     int fnum = floor((N-flen)/fhop)+1;
     //int fnum = floor((N-flen)/fhop); // bug in feacalc will result in 1 frame less for 8kHzs data than for 16kHz :-/
 
     // What's the last sample that feacalc will consider?
     int send = (fnum-1)*fhop + flen;
-    int trap = 10;  // 10 FRAME context duration
+    int trap = DEFAULT_LONGTERM_TRAP_FRAMECTX;  // 10 FRAME context duration
     int mirr_len = trap*fhop;
-    int fdlpwin = 0.2*Fs+flen;  // Modulation spectrum Computation Window.
+    int fdlpwin = DEFAULT_LONGTERM_WINLEN_MS * Fs+flen;  // Modulation spectrum Computation Window.
     int fdlpolap = fdlpwin - fhop;
 
     int Np;
@@ -1469,8 +1576,8 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 
     if (*feats == NULL)
     { // Here we know nbands, finally, and since feats is NULL we are on the first frame
-
-	*dim = nbands*(*nceps)*2;
+	int dimmult = longterm_do_static + longterm_do_dynamic;
+	*dim = nbands*(*nceps) * dimmult;
 	if (do_spec)
 	{
 	    if (specgrm) 
@@ -1481,8 +1588,10 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 	    }
 	    else
 	    {
-		*nceps=13; 
-		*dim = (*nceps)*3;
+		//*nceps=DEFAULT_SHORTTERM_NCEPS; // now in argument parsing and
+		//main...
+		int dimmult = 1 + shortterm_do_delta + shortterm_do_ddelta;
+		*dim = (*nceps) * dimmult;
 	    } 
 	}
 
@@ -1547,7 +1656,10 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 
 	    float * frames = fconstruct_frames(&env_pad1, &Npad1, fdlpwin, fdlpolap, &nframes);
 
-	    spec2cep(frames, fdlpwin, nframes, *nceps, nbands, i, 0, *feats, 1 );
+	    if (longterm_do_static == 1)
+	    {
+		spec2cep(frames, fdlpwin, nframes, *nceps, nbands, i, 0, *feats, 1 );
+	    }
 
 	    FREE(frames);
 
@@ -1595,7 +1707,10 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 
 	    frames = fconstruct_frames(&env_pad1, &Npad1, fdlpwin, fdlpolap, &nframes);
 
-	    spec2cep(frames, fdlpwin, nframes, *nceps, nbands, i, *nceps, *feats, 1);  
+	    if (longterm_do_dynamic == 1)
+	    {
+		spec2cep(frames, fdlpwin, nframes, *nceps, nbands, i, *nceps * longterm_do_static, *feats, 1);
+	    }
 
 	    FREE(frames);
 	    FREE(env);
@@ -1643,8 +1758,8 @@ int main(int argc, char **argv)
     fprintf(stderr, "Limit DCT range: %d\n", limit_range);
     fprintf(stderr, "Apply wiener filter: %d (alpha=%g)\n", do_wiener, wiener_alpha);
 
-    int fwin = 0.025*Fs;
-    int fstep = 0.010*Fs; 
+    int fwin = DEFAULT_SHORTTERM_WINLEN_MS * Fs;
+    int fstep = DEFAULT_SHORTTERM_WINSHIFT_MS * Fs; 
 
     int fnum = floor(((float)N-fwin)/fstep)+1;
     //int fnum = floor(((float)N-fwin)/fstep); // stupid bug in feacalc...
@@ -1680,15 +1795,15 @@ int main(int argc, char **argv)
 	vad_label_start = 0;
     }
 
-    int fdlpwin = fdplp_win_len_sec * 40 * fwin;
-    int fdlpolap = 0.020*Fs;  
+    int fdlpwin = fdplp_win_len_sec * FDLPWIN_SEC2SHORTTERMMULT_FACTOR * fwin;
+    int fdlpolap = DEFAULT_FDLPWIN_SHIFT_MS * Fs;  
     int nframes;
     int add_samp;
     float *frames = fconstruct_frames(&signal, &N, fdlpwin, fdlpolap, &nframes);
     add_samp = N - Nsignal;
 
     // Compute the feature vector time series
-    int nceps = 14;
+    int nceps = num_cepstral_coeffs;
     int dim = 0;
     int nfeatfr_calculated = 0;
 
