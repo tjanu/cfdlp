@@ -61,7 +61,40 @@ int vad_label_start = 0;
 
 void usage()
 {
-    fatal("\n USAGE : \n[cfdlp -i <str> [-o <str> | -print <str>] (REQUIRED)]\n\n OPTIONS  \n -sr <str> Samplerate (8000) \n -gn <flag> -  Gain Normalization (1) \n -spec <flag> - Spectral features (Default 0 --> Modulation features) \n -axis <str> - bark,mel,linear-mel,linear-bark (bark)\n -specgram <flag> - Spectrogram output (0)\n -limit-range <flag> - Limit DCT-spectrum to 125-3800Hz before FDPLP processing (0)\n -apply-wiener <flag> - Apply Wiener filter (helps against additive noise) (0)\n -wiener-alpha <float> - sets the parameter alpha of the wiener filter (0.9 for modulation and 0.1 for spectral features)\n -fdplpwin <sec> - Length of FDPLP window in sec (better for reverberant environments when gain normalization is used: 10) (5)\n -truncate-last <flag> - truncate last frame if number of samples does not fill the entire fdplp window (speeds up computation but also changes numbers) (0)\n -skip-bands <int n> - Whether or not to skip the first n bands when computing the features (useful value for telephone data: 2) (0)\n -vadfile <str> - name of the VAD file to read in. Has to be ascii, one char per frame (not given -> energy-based ad-hoc VAD)\n -speechchar <char> - the char representing speech in the VAD file ('1')\n -nonspeechchar <char> - the char representing non-speech in the VAD file ('0')\n -vad-grace <int> - maximum difference between number of frames in VAD file compared to how many are computed. If there are less frames in the VAD file, the last VAD label gets repeated. (2)");
+    fatal("\nFDLP Feature Extraction software\n"
+	    "USAGE:\n"
+	    "cfdlp [options] -i <str> [-o <str> | -print <str>]\n\n"
+	    "OPTIONS\n\n"
+	    " -h, --help\t\tPrint this help and exit\n\n"
+	    "IO options:\n\n"
+	    " -i <str>\t\tInput file name. Only signed 16-bit little endian raw files are supported. REQUIRED\n"
+	    " -o <str>\t\tOutput file name for raw binary float output. Either this or -print is REQUIRED\n"
+	    " -print <str>\t\tOutput file name for ascii output, one frame per line. Either this or -o is REQUIRED\n"
+	    " -sr <str>\t\tInput samplerate in Hertz. Only 8000 and 16000 Hz are supported. (8000)\n\n"
+
+	    "Windowing options:\n\n"
+	    " -fdplpwin <sec>\tLength of FDPLP window in sec (better for reverberant environments when gain normalization is used: 10) (5)\n"
+	    " -truncate-last <flag>\ttruncate last frame if number of samples does not fill the entire fdplp window (speeds up computation but also changes numbers) (0)\n\n"
+
+	    "Feature generation options:\n\n"
+	    " -gn <flag>\t\tGain Normalization (1) \n"
+	    " -limit-range <flag>\tLimit DCT-spectrum to 125-3800Hz before FDPLP processing (0)\n"
+	    " -axis <str>\t\tbark,mel,linear-mel,linear-bark (bark)\n"
+	    " -skip-bands <int n>\tWhether or not to skip the first n bands when computing the features (useful value for telephone data: 2) (0)\n"
+	    " -feat <flag>\t\tFeature type to generate. (0)\n"
+	    "\t\t\t\t0: Long-term modulation features\n"
+	    "\t\t\t\t1: Short-term spectral features\n"
+	    " -spec <flag>\t\tAlternative legacy name for -feat\n"
+	    " -specgram <flag>\tSpectrogram output. If this option is given, -feat will have no effect and processing ends after spectrogram output. (0)\n\n"
+
+	    "Additive noise suppression options:\n\n"
+	    " -apply-wiener <flag>\tApply Wiener filter (helps against additive noise) (0)\n"
+	    " -wiener-alpha <float>\tsets the parameter alpha of the wiener filter (0.9 for modulation and 0.1 for spectral features)\n"
+	    " -vadfile <str>\t\tname of the VAD file to read in. Has to be ascii, one char per frame (not given -> energy-based ad-hoc VAD)\n"
+	    " -speechchar <char>\tthe char representing speech in the VAD file ('1')\n"
+	    " -nonspeechchar <char>\tthe char representing non-speech in the VAD file ('0')\n"
+	    " -vad-grace <int>\tmaximum difference between number of frames in VAD file compared to how many are computed. If there are less frames in the VAD file, the last VAD label gets repeated. (2)"
+	    );
 }
 
 void parse_args(int argc, char **argv)
@@ -69,7 +102,13 @@ void parse_args(int argc, char **argv)
     int wiener_alpha_given = 0;
     for ( int i = 1; i < argc; i++ )
     {
-	if ( strcmp(argv[i], "-i") == 0 )
+	if ( strcmp(argv[i], "-h") == 0
+		|| strcmp(argv[i], "--help") == 0
+		|| strcmp(argv[i], "-help") == 0)
+	{
+	    usage();
+	}
+	else if ( strcmp(argv[i], "-i") == 0 )
 	{
 	    infile = argv[++i];
 	}
@@ -92,7 +131,9 @@ void parse_args(int argc, char **argv)
 	{
 	    do_gain_norm = atoi(argv[++i]);
 	}
-	else if ( strcmp(argv[i], "-spec") == 0 )
+	else if ( strcmp(argv[i], "-spec") == 0 
+		|| strcmp(argv[i], "-feat") == 0
+		)
 	{
 	    do_spec = atoi(argv[++i]);
 	}
@@ -175,7 +216,7 @@ void parse_args(int argc, char **argv)
 
     if ( !infile || !(outfile || printfile) )
     {
-	fprintf(stderr, "\nERROR: infile (-i) and at least one of outfile (-o) or printfile (-print) args is required");
+	fprintf(stderr, "\nERROR: infile (-i) and at least one of outfile (-o) or printfile (-print) args is required\n");
 	usage();
     }
 
