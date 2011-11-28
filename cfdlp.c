@@ -40,6 +40,8 @@ char *infile = NULL;
 char *outfile = NULL;
 char *printfile = NULL;
 int Fs = 8000;
+int factor = -1;
+int Fs1 = -1;
 int do_gain_norm = 1;
 int do_spec = 0;
 int skip_bands = 0;
@@ -115,6 +117,11 @@ void usage()
 	    "\t\t\t\t0: Only include <nceps> statically compressed modulation coefficients per band\n"
 	    "\t\t\t\t1: Only include <nceps> dynamically compressed modulation coefficients per band\n"
 	    "\t\t\t\t2: <nceps> statically compressed modulation coefficients + <nceps> dynamically compressed modulation coefficients, per band\n"
+	    " -downsampling-factor <int>\tBy which factor to downsample the fdlp envelope. Considerably speeds up computation. (1)\n"
+	    "\t\t\t\tA factor of 20 was found to be useful for 8kHz data.\n"
+	    " -downsampling-sr <int>\tWhat sample rate to downsample the fdlp envelope to. (-sr/-downsampling-factor)\n"
+	    "\t\t\t\tEssentially, this is an alternate way of giving -downsampling-factor independent of the sampling rate.\n"
+	    "\t\t\t\tIf both are given and do not match, -downsampling-factor takes precedence.\n"
 
 	    "\nAdditive noise suppression options:\n\n"
 	    " -apply-wiener <flag>\tApply Wiener filter (helps against additive noise) (0)\n"
@@ -293,6 +300,14 @@ void parse_args(int argc, char **argv)
 		    usage();
 	    }
 	}
+	else if ( strcmp(argv[i], "-downsampling-factor") == 0 )
+	{
+	    factor = atoi(argv[++i]);
+	}
+	else if ( strcmp(argv[i], "-downsampling-sr") == 0 )
+	{
+	    Fs1 = atoi(argv[++i]);
+	}
 	else
 	{
 	    fprintf(stderr, "unknown arg: %s\n", argv[i]);
@@ -326,6 +341,19 @@ void parse_args(int argc, char **argv)
     if (num_cepstral_coeffs == -1)
     {
 	num_cepstral_coeffs = (do_spec == 0 ? DEFAULT_LONGTERM_NCEPS : DEFAULT_SHORTTERM_NCEPS);
+    }
+    if (factor < 0 && Fs1 > 0)
+    {
+	factor = Fs / Fs1;
+    }
+    else if (factor > 0)
+    {
+	Fs1 = Fs / factor;
+    }
+    else
+    {
+	factor = 1;
+	Fs1 = Fs;
     }
 }
 
@@ -1321,7 +1349,7 @@ void spec2cep(float * frames, int fdlpwin, int nframes, int ncep, int nbands, in
 		}
 		else
 		{
-		    feat[i] += icsi_log(frame[j],LOOKUP_TABLE,nbits_log)*dctm[i*fdlpwin+j];
+		    feat[i] += /*icsi_*/log(frame[j]/*,LOOKUP_TABLE,nbits_log*/)*dctm[i*fdlpwin+j];
 		}
 	    }
 	}
@@ -1364,7 +1392,7 @@ void spec2cep4energy(float * frames, int fdlpwin, int nframes, int ncep, float *
 		}
 		else
 		{
-		    feat[i] += (0.33*icsi_log(frame[j],LOOKUP_TABLE,nbits_log))*dctm[i*fdlpwin+j]; //Cubic root compression and log
+		    feat[i] += (0.33* /*icsi_*/log(frame[j]/*,LOOKUP_TABLE,nbits_log*/))*dctm[i*fdlpwin+j]; //Cubic root compression and log
 		}
 	    }
 	}
@@ -1548,31 +1576,34 @@ void audspec(float **bands, int *nbands, int nframes)
 void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int nfeatfr, int numframes, int *dim)
 {
     int flen= DEFAULT_SHORTTERM_WINLEN_MS * Fs;   // frame length corresponding to 25ms
+    int flen1 = flen / factor;
     int fhop= DEFAULT_SHORTTERM_WINSHIFT_MS * Fs;   // frame overlap corresponding to 10ms
-    int fdlplen = N;
+    int fhop1 = fhop / factor;
     int fnum = floor((N-flen)/fhop)+1;
     //int fnum = floor((N-flen)/fhop); // bug in feacalc will result in 1 frame less for 8kHzs data than for 16kHz :-/
 
     // What's the last sample that feacalc will consider?
     int send = (fnum-1)*fhop + flen;
+    int send1 = send / factor;
+    int fdlplen = send / factor;
     int trap = DEFAULT_LONGTERM_TRAP_FRAMECTX;  // 10 FRAME context duration
     int mirr_len = trap*fhop;
     int fdlpwin = DEFAULT_LONGTERM_WINLEN_MS * Fs+flen;  // Modulation spectrum Computation Window.
     int fdlpolap = fdlpwin - fhop;
 
     int Np;
-    float *p = fdlpfit_full_sig(x,fdlplen,Fs,&Np);
+    float *p = fdlpfit_full_sig(x,N,Fs,&Np);
 
-    int Npad1 = send+2*mirr_len;
+    int Npad1 = send1+2*mirr_len;
     float *env_pad1 = (float *) MALLOC(Npad1*sizeof(float));
 
-    int Npad2 = send+1000;
+    int Npad2 = send1+1000/factor;
     float *env_pad2 = (float *) MALLOC(Npad2*sizeof(float));
     float *env_log = (float *) MALLOC(Npad2*sizeof(float));	
     float *env_adpt = (float *) MALLOC(Npad2*sizeof(float));
 
     int nframes;
-    float *hamm = hamming(flen);  // Defining the Hamming window
+    float *hamm = hamming(flen1);  // Defining the Hamming window
     float *energybands = (float *) MALLOC(fnum*nbands*sizeof(float)) ; //Energy of features	
 
     if (*feats == NULL)
@@ -1584,7 +1615,6 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 	    if (specgrm) 
 	    {
 		*dim = nbands;
-		do_spec = 1;
 		*nceps=nbands;
 	    }
 	    else
@@ -1610,12 +1640,12 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 
 	if (do_spec)
 	{
-	    float *frames = fconstruct_frames(&env, &send, flen, flen-fhop, &nframes);
+	    float *frames = fconstruct_frames(&env, &send1, flen1, flen1-fhop1, &nframes);
 	    for (int fr = 0; fr < fnum;fr++)
 	    {
-		float *envwind = frames+fr*flen;
+		float *envwind = frames+fr*flen1;
 		float temp = 0;
-		for (int ind =0;ind<flen;ind++) 
+		for (int ind =0;ind<flen1;ind++) 
 		{
 		    temp +=  envwind[ind]*hamm[ind];
 		}
@@ -1633,9 +1663,9 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 	}
 	else
 	{ 
-	    for (int k =0;k<N;k++)
+	    for (int k =0;k<send1;k++)
 	    {
-		env_log[k] = icsi_log(env[k],LOOKUP_TABLE,nbits_log);     
+		env_log[k] = /*icsi_*/log(env[k]/*,LOOKUP_TABLE,nbits_log*/);     
 		sleep(0);	// Found out that icsi log is too fast and gives errors 
 	    }
 
@@ -1645,13 +1675,13 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 		{
 		    env_pad1[n] = env_log[mirr_len-1-n];
 		}
-		else if ( n >= mirr_len && n < mirr_len + send )
+		else if ( n >= mirr_len && n < mirr_len + send1 )
 		{
 		    env_pad1[n] = env_log[n-mirr_len];	    
 		}
 		else
 		{
-		    env_pad1[n] = env_log[send-(n-mirr_len-send+1)];
+		    env_pad1[n] = env_log[send-(n-mirr_len-send1+1)];
 		}
 	    }
 
@@ -1668,13 +1698,13 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 	    float maxenv = 0;
 	    for ( int n = 0; n < Npad2; n++ )
 	    {
-		if ( n < 1000 )
+		if ( n < 1000/factor )
 		{
 		    env_pad2[n] = env[0];
 		}
 		else
 		{
-		    env_pad2[n] = env[n-1000];
+		    env_pad2[n] = env[n-1000/factor];
 		}
 
 		if ( env_pad2[n] > maxenv )
@@ -1688,21 +1718,21 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 		env_pad2[n] /= maxenv;
 	    }      
 
-	    adapt_m(env_pad2,Npad2,Fs,env_adpt);
+	    adapt_m(env_pad2,Npad2,Fs1,env_adpt);
 
 	    for ( int n = 0; n < Npad1; n++ )
 	    {
 		if ( n < mirr_len )
 		{
-		    env_pad1[n] = env_adpt[mirr_len-1-n+1000];
+		    env_pad1[n] = env_adpt[mirr_len-1-n+1000/factor];
 		}
-		else if ( n >= mirr_len && n < mirr_len + send )
+		else if ( n >= mirr_len && n < mirr_len + send1 )
 		{
-		    env_pad1[n] = env_adpt[n-mirr_len+1000];	    
+		    env_pad1[n] = env_adpt[n-mirr_len+1000/factor];	    
 		}
 		else
 		{
-		    env_pad1[n] = env_adpt[send-(n-mirr_len-send+1)+1000];
+		    env_pad1[n] = env_adpt[send-(n-mirr_len-send1+1)+1000/factor];
 		}
 	    }
 
@@ -1758,6 +1788,8 @@ int main(int argc, char **argv)
     fprintf(stderr, "Gain Norm %d \n",do_gain_norm);
     fprintf(stderr, "Limit DCT range: %d\n", limit_range);
     fprintf(stderr, "Apply wiener filter: %d (alpha=%g)\n", do_wiener, wiener_alpha);
+
+    fprintf(stderr, "Feature type: %s\n", (do_spec ? "spectral" : "modulation"));
 
     int fwin = DEFAULT_SHORTTERM_WINLEN_MS * Fs;
     int fstep = DEFAULT_SHORTTERM_WINSHIFT_MS * Fs; 
