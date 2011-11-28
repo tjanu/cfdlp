@@ -9,6 +9,8 @@
 #include <fftw3.h>
 #include "adapt.h"
 
+#include <pthread.h>
+
 # define pi 3.14159265
 void adapt_m(float * in, int N, float fsample, float * out);
 
@@ -78,6 +80,208 @@ int shortterm_do_ddelta = 1;
 int longterm_do_static = 1;
 int longterm_do_dynamic = 1;
 int num_cepstral_coeffs = -1;
+
+// FFTW plans "outsourced"
+fftw_plan dct_plan = NULL;
+int dct_plan_size = -1;
+double *dct_buffer = NULL;
+
+fftw_plan* lpc_r2c_plans = NULL;
+int* lpc_r2c_plan_sizes = NULL;
+double** lpc_r2c_input_buffers = NULL;
+complex** lpc_r2c_output_buffers = NULL;
+fftw_plan* lpc_c2r_plans = NULL;
+int* lpc_c2r_plan_sizes = NULL; // only needed in hlpc_wiener
+complex** lpc_c2r_input_buffers = NULL; // only needed in hlpc_wiener
+double** lpc_c2r_output_buffers = NULL;
+
+fftw_plan* fdlpenv_plans = NULL;
+int* fdlpenv_plan_sizes = NULL;
+double** fdlpenv_input_buffers = NULL;
+complex** fdlpenv_output_buffers = NULL;
+
+// Multithreading
+pthread_t* band_threads = NULL;
+pthread_mutex_t fftw_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+struct lpc_info {
+    double* y;
+    int len;
+    int order;
+    int compression;
+    float* poles;
+    int orig_len;
+    int* vadindices;
+    int Nindices;
+    int band;
+};
+
+struct fdlpenv_info {
+    float* poles;
+    int Np;
+    int fdlplen;
+    int band;
+    float* env;
+};
+
+void cleanup_fdlpenv_plans()
+{
+    for (int i = 0; i < nbands; i++)
+    {
+	if (fdlpenv_plans != NULL)
+	{
+	    if (fdlpenv_plans[i] != NULL)
+	    {
+		pthread_mutex_lock(&fftw_mutex);
+		fftw_destroy_plan(fdlpenv_plans[i]);
+		pthread_mutex_unlock(&fftw_mutex);
+	    }
+	}
+	if (fdlpenv_input_buffers != NULL)
+	{
+	    if (fdlpenv_input_buffers[i] != NULL)
+	    {
+		FREE(fdlpenv_input_buffers[i]);
+	    }
+	}
+	if (fdlpenv_output_buffers != NULL)
+	{
+	    if (fdlpenv_output_buffers[i] != NULL)
+	    {
+		FREE(fdlpenv_output_buffers[i]);
+	    }
+	}
+    }
+    if (fdlpenv_plans != NULL)
+    {
+	FREE(fdlpenv_plans);
+	fdlpenv_plans = NULL;
+    }
+    if (fdlpenv_plan_sizes != NULL)
+    {
+	FREE(fdlpenv_plan_sizes);
+	fdlpenv_plan_sizes = NULL;
+    }
+    if (fdlpenv_input_buffers != NULL)
+    {
+	FREE(fdlpenv_input_buffers);
+	fdlpenv_input_buffers = NULL;
+    }
+    if (fdlpenv_output_buffers != NULL)
+    {
+	FREE(fdlpenv_output_buffers);
+	fdlpenv_output_buffers = NULL;
+    }
+}
+
+void cleanup_lpc_plans()
+{
+    for (int i = 0; i < nbands; i++)
+    {
+	if (lpc_r2c_plans != NULL)
+	{
+	    if (lpc_r2c_plans[i] != NULL)
+	    {
+		pthread_mutex_lock(&fftw_mutex);
+		fftw_destroy_plan(lpc_r2c_plans[i]);
+		pthread_mutex_unlock(&fftw_mutex);
+	    }
+	}
+	if (lpc_r2c_input_buffers != NULL)
+	{
+	    if (lpc_r2c_input_buffers[i] != NULL)
+	    {
+		FREE(lpc_r2c_input_buffers[i]);
+	    }
+	}
+	if (lpc_r2c_output_buffers != NULL)
+	{
+	    if (lpc_r2c_output_buffers[i] != NULL)
+	    {
+		FREE(lpc_r2c_output_buffers[i]);
+	    }
+	}
+	if (lpc_c2r_plans != NULL)
+	{
+	    if (lpc_c2r_plans[i] != NULL)
+	    {
+		pthread_mutex_lock(&fftw_mutex);
+		fftw_destroy_plan(lpc_c2r_plans[i]);
+		pthread_mutex_unlock(&fftw_mutex);
+	    }
+	}
+	if (lpc_c2r_input_buffers != NULL)
+	{
+	    if (lpc_c2r_input_buffers[i] != NULL)
+	    {
+		FREE(lpc_c2r_input_buffers[i]);
+	    }
+	}
+	if (lpc_c2r_output_buffers != NULL)
+	{
+	    if (lpc_c2r_output_buffers[i] != NULL)
+	    {
+		FREE(lpc_c2r_output_buffers[i]);
+	    }
+	}
+    }
+    if (lpc_r2c_plans != NULL)
+    {
+	FREE(lpc_r2c_plans);
+	lpc_r2c_plans = NULL;
+    }
+    if (lpc_r2c_plan_sizes != NULL)
+    {
+	FREE(lpc_r2c_plan_sizes);
+	lpc_r2c_plan_sizes = NULL;
+    }
+    if (lpc_r2c_input_buffers != NULL)
+    {
+	FREE(lpc_r2c_input_buffers);
+	lpc_r2c_input_buffers = NULL;
+    }
+    if (lpc_r2c_output_buffers != NULL)
+    {
+	FREE(lpc_r2c_output_buffers);
+	lpc_r2c_output_buffers = NULL;
+    }
+    if (lpc_c2r_plans != NULL)
+    {
+	FREE(lpc_c2r_plans);
+	lpc_c2r_plans = NULL;
+    }
+    if (lpc_c2r_plan_sizes != NULL)
+    {
+	FREE(lpc_c2r_plan_sizes);
+	lpc_c2r_plan_sizes = NULL;
+    }
+    if (lpc_c2r_input_buffers != NULL)
+    {
+	FREE(lpc_c2r_input_buffers);
+	lpc_c2r_input_buffers = NULL;
+    }
+    if (lpc_c2r_output_buffers != NULL)
+    {
+	FREE(lpc_c2r_output_buffers);
+	lpc_c2r_output_buffers = NULL;
+    }
+}
+
+void cleanup_fftw_plans()
+{
+    if (dct_plan != NULL)
+    {
+	pthread_mutex_lock(&fftw_mutex);
+	fftw_destroy_plan(dct_plan);
+	pthread_mutex_unlock(&fftw_mutex);
+    }
+    if (dct_buffer != NULL)
+    {
+	FREE(dct_buffer);
+    }
+    cleanup_lpc_plans();
+    cleanup_fdlpenv_plans();
+}
 
 void usage()
 {
@@ -725,79 +929,173 @@ void levinson(int p, double *phi, float *poles)
     FREE(alpha);
 }
 
-void lpc( double *y, int len, int order, int compr, float *poles ) 
+void lpc( double *y, int len, int order, int compr, float *poles, int myband ) 
 {
     // Compute autocorrelation vector or matrix
     int N = pow(2,ceil(log2(2*len-1)));
 
-    double *Y = (double *) MALLOC( N*sizeof(double) );
+    if (N != lpc_r2c_plan_sizes[myband])
+    {
+	lpc_r2c_plan_sizes[myband] = N;
+	if (lpc_r2c_plans[myband] != NULL)
+	{
+	    pthread_mutex_lock(&fftw_mutex);
+	    fftw_destroy_plan(lpc_r2c_plans[myband]);
+	    pthread_mutex_unlock(&fftw_mutex);
+	    lpc_r2c_plans[myband] = NULL;
+	}
+	if (lpc_r2c_input_buffers[myband] != NULL)
+	{
+	    FREE(lpc_r2c_input_buffers[myband]);
+	    lpc_r2c_input_buffers[myband] = NULL;
+	}
+	if (lpc_r2c_output_buffers[myband] != NULL)
+	{
+	    FREE(lpc_r2c_output_buffers[myband]);
+	    lpc_r2c_output_buffers[myband] = NULL;
+	}
+	if (lpc_c2r_plans[myband] != NULL)
+	{
+	    FREE(lpc_c2r_plans[myband]);
+	    lpc_c2r_plans[myband] = NULL;
+	}
+	if (lpc_c2r_output_buffers[myband] != NULL)
+	{
+	    FREE(lpc_c2r_output_buffers[myband]);
+	    lpc_c2r_output_buffers[myband] = NULL;
+	}
+    }
+
+    if (lpc_r2c_input_buffers[myband] == NULL)
+    {
+	lpc_r2c_input_buffers[myband] = (double*) MALLOC(lpc_r2c_plan_sizes[myband] * sizeof(double));
+    }
+
     for ( int n = 0; n < N; n++ )
     {
 	if ( n < len )
 	{
-	    Y[n] = y[n];
+	    lpc_r2c_input_buffers[myband][n] = y[n];
 	}
 	else
 	{
-	    Y[n] = 0;
+	    lpc_r2c_input_buffers[myband][n] = 0;
 	}
     }   
 
-    complex *X = (complex *) MALLOC( N*sizeof(complex) );
-    memset(X, 0, N * sizeof(complex)); // fix uninitialized value-issue in multiplication below 
-    fftw_plan plan = fftw_plan_dft_r2c_1d(N, Y, X, FFTW_ESTIMATE);
-    fftw_execute(plan);
-    fftw_destroy_plan(plan);
+    if (lpc_r2c_output_buffers[myband] == NULL)
+    {
+	lpc_r2c_output_buffers[myband] = (complex*) MALLOC(lpc_r2c_plan_sizes[myband] * sizeof(complex));
+	memset(lpc_r2c_output_buffers[myband], 0, N * sizeof(complex)); // fix uninitialized value-issue in multiplication below 
+    }
+
+    if (lpc_r2c_plans[myband] == NULL)
+    {
+	pthread_mutex_lock(&fftw_mutex);
+	lpc_r2c_plans[myband] = fftw_plan_dft_r2c_1d(
+		lpc_r2c_plan_sizes[myband],
+		lpc_r2c_input_buffers[myband],
+		lpc_r2c_output_buffers[myband],
+		FFTW_ESTIMATE);
+	pthread_mutex_unlock(&fftw_mutex);
+    }
+    fftw_execute(lpc_r2c_plans[myband]);
 
     for ( int n = 0; n < N; n++ )
     {
-	X[n] = X[n]*conj(X[n])/len; //add compr
+	lpc_r2c_output_buffers[myband][n] = lpc_r2c_output_buffers[myband][n]
+	    *conj(lpc_r2c_output_buffers[myband][n])
+	    /len; //add compr
     }
 
-    double *R = (double *) MALLOC( N*sizeof(double) );
-    plan = fftw_plan_dft_c2r_1d(N, X, R, FFTW_ESTIMATE);
-    fftw_execute(plan);
-    fftw_destroy_plan(plan);
+    if (lpc_c2r_output_buffers[myband] == NULL)
+    {
+	lpc_c2r_output_buffers[myband] = (double*) MALLOC(lpc_r2c_plan_sizes[myband] * sizeof(double));
+    }
+    if (lpc_c2r_plans[myband] == NULL)
+    {
+	pthread_mutex_lock(&fftw_mutex);
+	lpc_c2r_plans[myband] = fftw_plan_dft_c2r_1d(
+		lpc_r2c_plan_sizes[myband],
+		lpc_r2c_output_buffers[myband],
+		lpc_c2r_output_buffers[myband],
+		FFTW_ESTIMATE);
+	pthread_mutex_unlock(&fftw_mutex);
+    }
+    fftw_execute(lpc_c2r_plans[myband]);
     for ( int n = 0; n < N; n++ )
     {
-	R[n] /= N;
+	lpc_c2r_output_buffers[myband][n] /= N;
     }
 
-    levinson(order, R, poles);
-
-    FREE(R);
-    FREE(X);
-    FREE(Y);
+    levinson(order, lpc_c2r_output_buffers[myband], poles);
 }
 
-void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int *vadindices, int Nindices)
+void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int *vadindices, int Nindices, int myband)
 {
     int wlen = round(DEFAULT_SHORTTERM_WINLEN_MS* Fs);
     float SP = DEFAULT_SHORTTERM_SHIFT_PERCENTAGE;
 
     int N = 2 * orig_len - 1;
 
-    double *Y = (double *)MALLOC(N * sizeof(double));
+    if (N != lpc_r2c_plan_sizes[myband])
+    {
+	lpc_r2c_plan_sizes[myband] = N;
+	if (lpc_r2c_plans[myband] != NULL)
+	{
+	    pthread_mutex_lock(&fftw_mutex);
+	    fftw_destroy_plan(lpc_r2c_plans[myband]);
+	    pthread_mutex_unlock(&fftw_mutex);
+	    lpc_r2c_plans[myband] = NULL;
+	}
+	if (lpc_r2c_input_buffers[myband] != NULL)
+	{
+	    FREE(lpc_r2c_input_buffers[myband]);
+	    lpc_r2c_input_buffers[myband] = NULL;
+	}
+	if (lpc_r2c_output_buffers[myband] != NULL)
+	{
+	    FREE(lpc_r2c_output_buffers[myband]);
+	    lpc_r2c_output_buffers[myband] = NULL;
+	}
+    }
+    if (lpc_r2c_input_buffers[myband] == NULL)
+    {
+	lpc_r2c_input_buffers[myband] = (double*) MALLOC(N * sizeof(double));
+    }
     for (int n = 0; n < N; n++)
     {
 	if (n < len)
 	{
-	    Y[n] = y[n];
+	    lpc_r2c_input_buffers[myband][n] = y[n];
 	}
 	else
 	{
-	    Y[n] = 0.;
+	    lpc_r2c_input_buffers[myband][n] = 0.;
 	}
     }
-    complex *ENV_cmplx = (complex *)MALLOC(N * sizeof(complex));
-    memset(ENV_cmplx, 0, N * sizeof(complex));
-    fftw_plan plan = fftw_plan_dft_r2c_1d(N, Y, ENV_cmplx, FFTW_ESTIMATE);
-    fftw_execute(plan);
-    fftw_destroy_plan(plan);
+    if (lpc_r2c_output_buffers[myband] == NULL)
+    {
+	lpc_r2c_output_buffers[myband] = (complex*) MALLOC(N * sizeof(complex));
+	memset(lpc_r2c_output_buffers[myband], 0, N * sizeof(complex));
+    }
+    if (lpc_r2c_plans[myband] == NULL)
+    {
+	pthread_mutex_lock(&fftw_mutex);
+	lpc_r2c_plans[myband] = fftw_plan_dft_r2c_1d(
+		lpc_r2c_plan_sizes[myband],
+		lpc_r2c_input_buffers[myband],
+		lpc_r2c_output_buffers[myband],
+		FFTW_ESTIMATE);
+	pthread_mutex_unlock(&fftw_mutex);
+    }
+    fftw_execute(lpc_r2c_plans[myband]);
+
     float *ENV = (float *) MALLOC(orig_len * sizeof(float));
     for (int i = 0; i < orig_len; i++)
     {
-	ENV[i] = (float)cabs(ENV_cmplx[i]) * (float)cabs(ENV_cmplx[i]);
+	ENV[i] = (float)cabs(lpc_r2c_output_buffers[myband][i])
+	    * (float)cabs(lpc_r2c_output_buffers[myband][i]);
     }
 
     int envlen = orig_len;
@@ -871,7 +1169,31 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     }
 
     N = 2 * siglen - 1;
-    complex *ENV_cmplx_op = (complex *)MALLOC(N * sizeof(complex));
+    if (lpc_c2r_plan_sizes[myband] != N)
+    {
+	lpc_c2r_plan_sizes[myband] = N;
+	if (lpc_c2r_plans[myband] != NULL)
+	{
+	    pthread_mutex_lock(&fftw_mutex);
+	    fftw_destroy_plan(lpc_c2r_plans[myband]);
+	    pthread_mutex_unlock(&fftw_mutex);
+	    lpc_c2r_plans[myband] = NULL;
+	}
+	if (lpc_c2r_input_buffers[myband] != NULL)
+	{
+	    FREE(lpc_c2r_input_buffers[myband]);
+	    lpc_c2r_input_buffers[myband] = NULL;
+	}
+	if (lpc_c2r_output_buffers[myband] != NULL)
+	{
+	    FREE(lpc_c2r_output_buffers[myband]);
+	    lpc_c2r_output_buffers[myband] = NULL;
+	}
+    }
+    if (lpc_c2r_input_buffers[myband] == NULL)
+    {
+	lpc_c2r_input_buffers[myband] = (complex*) MALLOC(N * sizeof(complex));
+    }
     for (int i = 0; i < N; i++) {
 	int env_output_index = 0;
 	if (i < siglen)
@@ -882,32 +1204,53 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 	{
 	    env_output_index = N - i;
 	}
-	ENV_cmplx_op[i] = ENV_output[env_output_index] / len;
+	lpc_c2r_input_buffers[myband][i] = ENV_output[env_output_index] / len;
     }
 
-    double *R = (double *)MALLOC(N * sizeof(double));
+    if (lpc_c2r_output_buffers[myband] == NULL)
+    {
+	lpc_c2r_output_buffers[myband] = (double*) MALLOC(N * sizeof(double));
+    }
 
-    plan = fftw_plan_dft_c2r_1d(N, ENV_cmplx_op, R, FFTW_ESTIMATE);
-    fftw_execute(plan);
-    fftw_destroy_plan(plan);
+    if (lpc_c2r_plans[myband] == NULL)
+    {
+	pthread_mutex_lock(&fftw_mutex);
+	lpc_c2r_plans[myband] = fftw_plan_dft_c2r_1d(
+		lpc_c2r_plan_sizes[myband],
+		lpc_c2r_input_buffers[myband],
+		lpc_c2r_output_buffers[myband],
+		FFTW_ESTIMATE);
+	pthread_mutex_unlock(&fftw_mutex);
+    }
+    fftw_execute(lpc_c2r_plans[myband]);
 
     for ( int n = 0; n < N; n++ )
     {
-	R[n] /= N;
+	lpc_c2r_output_buffers[myband][n] /= N;
     }
 
-    levinson(order, R, poles);
+    levinson(order, lpc_c2r_output_buffers[myband], poles);
 
-    FREE(Y);
-    FREE(ENV_cmplx);
     FREE(ENV);
     FREE(fftframes);
     FREE(Pn);
     FREE(X);
     FREE(ENV_output);
     FREE(inv_win);
-    FREE(ENV_cmplx_op);
-    FREE(R);
+}
+
+void* lpc_pthread_wrapper(void* arg)
+{
+    struct lpc_info* info = (struct lpc_info*)arg;
+    if (do_wiener)
+    {
+	hlpc_wiener(info->y, info->len, info->order, info->poles, info->orig_len, info->vadindices, info->Nindices, info->band);
+    }
+    else
+    {
+	lpc(info->y, info->len, info->order, info->compression, info->poles, info->band);
+    }
+    return NULL;
 }
 
 int *read_VAD(int N, int Fs, int* Nindices)
@@ -1060,26 +1403,43 @@ float * fdlpfit_full_sig(float *x, int N, int Fs, int *Np)
 	    NIS = check_VAD(x, N, Fs, &NNIS);
 	}
     }
-    double *y = (double *) MALLOC(N*sizeof(double));
+    if (dct_plan_size != N)
+    {
+	if (dct_plan != NULL)
+	{
+	    pthread_mutex_lock(&fftw_mutex);
+	    fftw_destroy_plan(dct_plan);
+	    pthread_mutex_unlock(&fftw_mutex);
+	    dct_plan = NULL;
+	}
+	if (dct_buffer != NULL)
+	{
+	    FREE(dct_buffer);
+	    dct_buffer = NULL;
+	}
+	dct_plan_size = N;
+	dct_buffer = (double *) MALLOC(dct_plan_size * sizeof(double));
+	pthread_mutex_lock(&fftw_mutex);
+	dct_plan = fftw_plan_r2r_1d(dct_plan_size, dct_buffer, dct_buffer, FFTW_REDFT10, FFTW_ESTIMATE);
+	pthread_mutex_unlock(&fftw_mutex);
+    }
 
     for ( int n = 0; n < N; n++ )
     {
-	y[n] = (double) x[n];
+	dct_buffer[n] = (double) x[n];
     }
 
-    fftw_plan plan = fftw_plan_r2r_1d(N, y, y, FFTW_REDFT10, FFTW_ESTIMATE);
-    fftw_execute(plan);
-    fftw_destroy_plan(plan);
+    fftw_execute(dct_plan);
 
     for ( int n = 0; n < N; n++ )
     {
-        y[n] /= sqrt(2.0*N);
+        dct_buffer[n] /= sqrt(2.0*N);
     }
-    y[0] /= sqrt(2);
+    dct_buffer[0] /= sqrt(2);
 
     int fdlpwin = N;
 
-    double *orig_y = y;
+    double *y = dct_buffer;
     if (limit_range)
     {
 	float lo_freq = 125.;
@@ -1162,9 +1522,62 @@ float * fdlpfit_full_sig(float *x, int N, int Fs, int *Np)
 	old_nbands = bank_nbands;
 
     }
+
+    if (nbands != bank_nbands)
+    {
+	cleanup_lpc_plans();
+	cleanup_fdlpenv_plans();
+	if (band_threads != NULL)
+	{
+	    FREE(band_threads);
+	    band_threads = NULL;
+	}
+    }
     
     nbands = bank_nbands;
 
+    if (lpc_r2c_plans == NULL)
+    {
+	lpc_r2c_plans = (fftw_plan*) MALLOC(nbands * sizeof(fftw_plan));
+	lpc_r2c_plan_sizes = (int*) MALLOC(nbands * sizeof(int));
+	lpc_r2c_input_buffers = (double**) MALLOC(nbands * sizeof(double*));
+	lpc_r2c_output_buffers = (complex**) MALLOC(nbands * sizeof(complex*));
+	lpc_c2r_plans = (fftw_plan*) MALLOC(nbands * sizeof(fftw_plan));
+	lpc_c2r_plan_sizes = (int*) MALLOC(nbands * sizeof(int));
+	lpc_c2r_input_buffers = (complex **) MALLOC(nbands * sizeof(complex*));
+	lpc_c2r_output_buffers = (double**) MALLOC(nbands * sizeof(double*));
+	for (int i = 0; i < nbands; i++)
+	{
+	    lpc_r2c_plans[i] = NULL;
+	    lpc_r2c_plan_sizes[i] = -1;
+	    lpc_r2c_input_buffers[i] = NULL;
+	    lpc_r2c_output_buffers[i] = NULL;
+	    lpc_c2r_plans[i] = NULL;
+	    lpc_c2r_plan_sizes[i] = -1;
+	    lpc_c2r_input_buffers[i] = NULL;
+	    lpc_c2r_output_buffers[i] = NULL;
+	}
+    }
+    if (fdlpenv_plans == NULL)
+    {
+	fdlpenv_plans = (fftw_plan*) MALLOC(nbands * sizeof(fftw_plan));
+	fdlpenv_plan_sizes = (int*) MALLOC(nbands * sizeof(int));
+	fdlpenv_input_buffers = (double**) MALLOC(nbands * sizeof(double*));
+	fdlpenv_output_buffers = (complex**) MALLOC(nbands * sizeof(complex*));
+	for (int i = 0; i < nbands; i++)
+	{
+	    fdlpenv_plans[i] = NULL;
+	    fdlpenv_plan_sizes[i] = -1;
+	    fdlpenv_input_buffers[i] = NULL;
+	    fdlpenv_output_buffers[i] = NULL;
+	}
+    }
+
+    if (band_threads == NULL)
+    {
+	band_threads = (pthread_t*) MALLOC(nbands * sizeof(pthread_t));
+    }
+    
     fprintf(stderr, "Number of sub-bands = %d\n", nbands);	
     switch (axis)
     {
@@ -1183,33 +1596,44 @@ float * fdlpfit_full_sig(float *x, int N, int Fs, int *Np)
     float *p = (float *) MALLOC( (*Np+1)*nbands*sizeof(float) );
 
     // Time envelope estimation per band and per frame.
-    double *y_filt = (double *) MALLOC(fdlpwin*sizeof(double));
+    double **y_filt = (double**) MALLOC(nbands * sizeof(double*));
+    struct lpc_info* info = (struct lpc_info*) MALLOC(nbands * sizeof(struct lpc_info));
     for ( int i = 0; i < nbands; i++ )
     {
+	y_filt[i] = (double*) MALLOC(fdlpwin * sizeof(double));
 	int Nsub = indices[2*i+1]-indices[2*i]+1;
 	for ( int n = 0; n < fdlpwin; n++ )
 	{
 	    if ( n < Nsub )
 	    {
-		y_filt[n] = y[indices[2*i]+n] * wts[i*fdlpwin+indices[2*i]+n];
+		y_filt[i][n] = y[indices[2*i]+n] * wts[i*fdlpwin+indices[2*i]+n];
 	    }
 	    else
 	    {
-		y_filt[n] = 0;
+		y_filt[i][n] = 0;
 	    }
 	}
-	if (do_wiener)
-	{
-	    hlpc_wiener(y_filt, Nsub, *Np, p+i*(*Np+1), N, NIS, NNIS);
-	}
-	else
-	{
-	    lpc(y_filt,Nsub,*Np,1,p+i*(*Np+1));
-	}
+	info[i].y = y_filt[i];
+	info[i].len = Nsub;
+	info[i].order = *Np;
+	info[i].compression = 1;
+	info[i].poles = p + i * (*Np+1);
+	info[i].orig_len = N;
+	info[i].vadindices = NIS;
+	info[i].Nindices = NNIS;
+	info[i].band = i;
+
+	pthread_create(&band_threads[i], NULL, lpc_pthread_wrapper, (void*)&info[i]);
+    }
+
+    for (int i = 0; i < nbands; i++)
+    {
+	pthread_join(band_threads[i], NULL);
+	FREE(y_filt[i]);
     }
 
     FREE(y_filt);
-    FREE(orig_y);
+    FREE(info);
     if (NIS != NULL)
     {
 	FREE(NIS);
@@ -1218,63 +1642,133 @@ float * fdlpfit_full_sig(float *x, int N, int Fs, int *Np)
     return p;
 }
 
-float * fdlpenv( float *p, int Np, int N )
+float * fdlpenv( float *p, int Np, int N, int myband )
 {
     float *env = (float *) MALLOC( N*sizeof(float) );
 
     int nfft = 2 * (MAX(Np, N) - 1); // --> N = nfft / 2 + 1 == half (fft is symmetric)
-    double *Y = (double *) MALLOC( nfft*sizeof(double) );
+    if (nfft != fdlpenv_plan_sizes[myband])
+    {
+	fdlpenv_plan_sizes[myband] = nfft;
+	if (fdlpenv_plans[myband] != NULL)
+	{
+	    pthread_mutex_lock(&fftw_mutex);
+	    fftw_destroy_plan(fdlpenv_plans[myband]);
+	    pthread_mutex_unlock(&fftw_mutex);
+	    fdlpenv_plans[myband] = NULL;
+	}
+	if (fdlpenv_input_buffers[myband] != NULL)
+	{
+	    FREE(fdlpenv_input_buffers[myband]);
+	    fdlpenv_input_buffers[myband] = NULL;
+	}
+	if (fdlpenv_output_buffers[myband] != NULL)
+	{
+	    FREE(fdlpenv_output_buffers[myband]);
+	    fdlpenv_output_buffers[myband] = NULL;
+	}
+    }
+
+    if (fdlpenv_input_buffers[myband] == NULL)
+    {
+	fdlpenv_input_buffers[myband] = (double*) MALLOC(fdlpenv_plan_sizes[myband] * sizeof(double));
+    }
     for ( int n = 0; n < nfft; n++ )
     {
 	if ( n <= Np )
 	{
-	    Y[n] = p[n];
+	    fdlpenv_input_buffers[myband][n] = p[n];
 	}
 	else
 	{
-	    Y[n] = 0;
+	    fdlpenv_input_buffers[myband][n] = 0;
 	}
     }   
 
-    complex *X = (complex *) MALLOC( nfft*sizeof(complex) );
-    fftw_plan plan = fftw_plan_dft_r2c_1d(nfft, Y, X, FFTW_ESTIMATE);
-    fftw_execute(plan);
-    fftw_destroy_plan(plan);
+    if (fdlpenv_output_buffers[myband] == NULL)
+    {
+	fdlpenv_output_buffers[myband] = (complex*) MALLOC(fdlpenv_plan_sizes[myband] * sizeof(complex));
+    }
+
+    if (fdlpenv_plans[myband] == NULL)
+    {
+	pthread_mutex_lock(&fftw_mutex);
+	fdlpenv_plans[myband] = fftw_plan_dft_r2c_1d(
+		fdlpenv_plan_sizes[myband],
+		fdlpenv_input_buffers[myband],
+		fdlpenv_output_buffers[myband],
+		FFTW_ESTIMATE);
+	pthread_mutex_unlock(&fftw_mutex);
+    }
+    fftw_execute(fdlpenv_plans[myband]);
 
     for ( int n = 0; n < N; n++ )
     {
-	X[n] = 1.0/X[n];
-	env[n] = 2*X[n]*conj(X[n]);
+	fdlpenv_output_buffers[myband][n] = 1.0/fdlpenv_output_buffers[myband][n];
+	env[n] = 2*fdlpenv_output_buffers[myband][n]*conj(fdlpenv_output_buffers[myband][n]);
     }
-
-    FREE(X);
-    FREE(Y);
 
     return env;
 }
 
-float * fdlpenv_mod( float *p, int Np, int N )
+float * fdlpenv_mod( float *p, int Np, int N, int myband )
 {
     float *env = (float *) MALLOC( N*sizeof(float) );
 
     int nfft = pow(2,ceil(log2(N))+1);
-    double *Y = (double *) MALLOC( nfft*sizeof(double) );
+    if (nfft != fdlpenv_plan_sizes[myband])
+    {
+	fdlpenv_plan_sizes[myband] = nfft;
+	if (fdlpenv_plans[myband] != NULL)
+	{
+	    pthread_mutex_lock(&fftw_mutex);
+	    fftw_destroy_plan(fdlpenv_plans[myband]);
+	    pthread_mutex_unlock(&fftw_mutex);
+	    fdlpenv_plans[myband] = NULL;
+	}
+	if (fdlpenv_input_buffers[myband] != NULL)
+	{
+	    FREE(fdlpenv_input_buffers[myband]);
+	    fdlpenv_input_buffers[myband] = NULL;
+	}
+	if (fdlpenv_output_buffers[myband] != NULL)
+	{
+	    FREE(fdlpenv_output_buffers[myband]);
+	    fdlpenv_output_buffers[myband] = NULL;
+	}
+    }
+
+    if (fdlpenv_input_buffers[myband] == NULL)
+    {
+	fdlpenv_input_buffers[myband] = (double*) MALLOC(fdlpenv_plan_sizes[myband] * sizeof(double));
+    }
     for ( int n = 0; n < nfft; n++ )
     {
 	if ( n <= Np )
 	{
-	    Y[n] = p[n];
+	    fdlpenv_input_buffers[myband][n] = p[n];
 	}
 	else
 	{
-	    Y[n] = 0;
+	    fdlpenv_input_buffers[myband][n] = 0;
 	}
     }   
 
-    complex *X = (complex *) MALLOC( nfft*sizeof(complex) );
-    fftw_plan plan = fftw_plan_dft_r2c_1d(nfft, Y, X, FFTW_ESTIMATE);
-    fftw_execute(plan);
-    fftw_destroy_plan(plan);
+    if (fdlpenv_output_buffers[myband] == NULL)
+    {
+	fdlpenv_output_buffers[myband] = (complex*)MALLOC(fdlpenv_plan_sizes[myband] * sizeof(complex));
+    }
+    if (fdlpenv_plans[myband] == NULL)
+    {
+	pthread_mutex_lock(&fftw_mutex);
+	fdlpenv_plans[myband] = fftw_plan_dft_r2c_1d(
+		fdlpenv_plan_sizes[myband],
+		fdlpenv_input_buffers[myband],
+		fdlpenv_output_buffers[myband],
+		FFTW_ESTIMATE);
+	pthread_mutex_unlock(&fftw_mutex);
+    }
+    fftw_execute(fdlpenv_plans[myband]);
 
     double *h = (double *) MALLOC( nfft*sizeof(double) );
     memset(h, 0, nfft * sizeof(double));
@@ -1282,8 +1776,8 @@ float * fdlpenv_mod( float *p, int Np, int N )
     nfft = nfft/2+1;
     for ( int n = 0; n < nfft; n++ )
     {
-	X[n] = 1.0/X[n];
-	h[n] = 2*X[n]*conj(X[n]);
+	fdlpenv_output_buffers[myband][n] = 1.0/fdlpenv_output_buffers[myband][n];
+	h[n] = 2*fdlpenv_output_buffers[myband][n]*conj(fdlpenv_output_buffers[myband][n]);
     }
 
     for ( int n = 0; n < N; n++ )
@@ -1307,10 +1801,19 @@ float * fdlpenv_mod( float *p, int Np, int N )
 
 
     FREE(h);
-    FREE(X);
-    FREE(Y);
 
     return env;
+}
+
+void* fdlpenv_pthread_wrapper(void* arg)
+{
+    struct fdlpenv_info* info = (struct fdlpenv_info*)arg;
+#if FDLPENV_WITH_INTERP == 1
+    info->env = fdlpenv_mod(info->poles, info->Np, info->fdlplen, info->band);
+#else
+    info->env = fdlpenv(info->poles, info->Np, info->fdlplen, info->band);
+#endif
+    return NULL;
 }
 
 void spec2cep(float * frames, int fdlpwin, int nframes, int ncep, int nbands, int band, int offset, float *feats, int log_flag) 
@@ -1630,14 +2133,26 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 	fprintf(stderr, "Parameters: (nframes=%d,  dim=%d)\n", numframes, *dim); 
     }
 
+    struct fdlpenv_info* info = (struct fdlpenv_info*) MALLOC(nbands * sizeof(struct fdlpenv_info));
     for (int i = 0; i < nbands; i++ )
     {
-#if FDLPENV_WITH_INTERP == 1
-	float *env = fdlpenv_mod(p+i*(Np+1), Np, fdlplen);
-#else
-	float *env = fdlpenv(p+i*(Np+1), Np, fdlplen);
-#endif
+	info[i].poles = p + i*(Np+1);
+	info[i].Np = Np;
+	info[i].fdlplen = fdlplen;
+	info[i].band = i;
+	info[i].env = NULL;
 
+	pthread_create(&band_threads[i], NULL, fdlpenv_pthread_wrapper, (void*)&info[i]);
+    }
+
+    for (int i = 0; i < nbands; i++)
+    {
+	pthread_join(band_threads[i], NULL);
+    }
+
+    for (int i = 0; i < nbands; i++ )
+    {
+	float* env = info[i].env;
 	if (do_spec)
 	{
 	    float *frames = fconstruct_frames(&env, &send1, flen1, flen1-fhop1, &nframes);
@@ -1763,6 +2278,8 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 	}
     }
 
+    FREE(info);
+
     FREE(env_pad1);
     FREE(env_pad2);
     FREE(env_adpt);
@@ -1776,6 +2293,8 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 int main(int argc, char **argv)
 { 
     parse_args(argc, argv);
+
+    pthread_mutex_init(&fftw_mutex, NULL);
 
     LOOKUP_TABLE = (float*) MALLOC(((int) pow(2,nbits_log))*sizeof(float));
     fill_icsi_log_table(nbits_log,LOOKUP_TABLE); 
@@ -1911,6 +2430,7 @@ int main(int argc, char **argv)
     }
 
     // Free the heap
+    cleanup_fftw_plans();
     if (vad_labels != NULL) {
 	FREE(vad_labels);
     }
@@ -1924,6 +2444,11 @@ int main(int argc, char **argv)
     if (fft2decompm != NULL)
 	FREE(fft2decompm);
     FREE(LOOKUP_TABLE);
+    if (band_threads != NULL)
+    {
+	FREE(band_threads);
+    }
+    pthread_mutex_destroy(&fftw_mutex);
     int mc = get_malloc_count();
     if (mc != 0)
 	fprintf(stderr,"WARNING: %d malloc'd items not free'd\n", mc);
