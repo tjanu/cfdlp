@@ -894,6 +894,7 @@ int *read_VAD(int N, int Fs, int* Nindices)
     if (vad_label_start + fnum > num_vad_labels) {
 	fatal("Not enough VAD labels left?!");
     }
+    fprintf(stderr, "read_vad: Returning labels for %d frames starting at %d\n", fnum, vad_label_start);
     for (int i = 0; i < fnum; i++) {
 	if (vad_labels[vad_label_start + i] == 0) {
 	    indices[(*Nindices)++] = i;
@@ -1767,15 +1768,28 @@ int main(int argc, char **argv)
 
     Nsignal = N;
 
+    int fdlpwin = fdplp_win_len_sec * FDLPWIN_SEC2SHORTTERMMULT_FACTOR * fwin;
+    int fdlpolap = DEFAULT_FDLPWIN_SHIFT_MS * Fs;  
+    int nframes;
+    int add_samp;
+    float *frames = fconstruct_frames(&signal, &N, fdlpwin, fdlpolap, &nframes);
+    add_samp = N - Nsignal;
+
     // read in VAD if we have to
     if (vadfile != NULL) {
 	num_vad_labels = fnum;
+	if (!truncate_last)
+	{
+	    num_vad_labels = floor(((float)N-fwin)/fstep)+1;
+	}
 	int num_read_labels = lenchars_file(vadfile);
 	char *labels = readchars_file(vadfile, 0, &num_read_labels);
 	if (labels[num_read_labels - 1] == '\n') {
 	    num_read_labels--;
 	}
-	fprintf(stderr, "Number of frames to calculate: %d, number of labels in file: %d\n", fnum, num_read_labels);
+	fprintf(stderr, "Number of frames to label: %d, number of labels in file: %d\n", num_vad_labels, num_read_labels);
+	fprintf(stderr, "VAD grace? %d\n", vad_grace);
+	fprintf(stderr, "Truncate_last? %d\n", truncate_last);
 	vad_labels = (int *)MALLOC(num_vad_labels * sizeof(int));
 	for (int i = 0; i < num_vad_labels; i++) {
 	    if (i < num_read_labels) {
@@ -1784,23 +1798,24 @@ int main(int argc, char **argv)
 		    fatal("VAD file had unspecified character in it!");
 		}
 	    } else {
-		if (i < num_vad_labels - vad_grace) {
+		if (i < num_read_labels + vad_grace)
+		{
+		    vad_labels[i] = vad_labels[num_read_labels - 1];
+		}
+		else if (!truncate_last)
+		{
+		    vad_labels[i] = 0;
+		}
+		else
+		{
 		    fatal("VAD file contains too few labels.");
 		}
-		vad_labels[i] = vad_labels[num_read_labels - 1];
 	    }
 	}
 	FREE(labels);
 	have_vadfile = 1;
 	vad_label_start = 0;
     }
-
-    int fdlpwin = fdplp_win_len_sec * FDLPWIN_SEC2SHORTTERMMULT_FACTOR * fwin;
-    int fdlpolap = DEFAULT_FDLPWIN_SHIFT_MS * Fs;  
-    int nframes;
-    int add_samp;
-    float *frames = fconstruct_frames(&signal, &N, fdlpwin, fdlpolap, &nframes);
-    add_samp = N - Nsignal;
 
     // Compute the feature vector time series
     int nceps = num_cepstral_coeffs;
@@ -1847,6 +1862,7 @@ int main(int argc, char **argv)
 	printf("\n"); 
 	nfeatfr_calculated += nfeatfr;
 	vad_label_start = nfeatfr_calculated;
+	fprintf(stderr, "Just computed %d frames, now have %d frames calculated in total.\n", nfeatfr, nfeatfr_calculated);
 
 	fprintf(stderr, "%f s\n",toc());
     }
