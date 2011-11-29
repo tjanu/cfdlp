@@ -1819,6 +1819,7 @@ float * fdlpenv_mod( float *p, int Np, int N, int myband )
 void spec2cep(float * frames, int fdlpwin, int nframes, int ncep, int nbands, int band, int offset, float *feats, int log_flag) 
 {
 
+    pthread_mutex_lock(&fftw_mutex);
     if ( dctm == NULL )
     {
 	dctm = (float *) MALLOC(fdlpwin*ncep*sizeof(float));
@@ -1835,6 +1836,7 @@ void spec2cep(float * frames, int fdlpwin, int nframes, int ncep, int nbands, in
 	    }
 	}
     }
+    pthread_mutex_unlock(&fftw_mutex);
 
     int dimmult = longterm_do_static + longterm_do_dynamic;
     for ( int f = 0; f < nframes; f++ )
