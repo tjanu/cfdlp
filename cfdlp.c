@@ -121,7 +121,18 @@ struct fdlpenv_info {
     int Np;
     int fdlplen;
     int band;
-    float* env;
+    int fnum;
+    int send;
+    int flen;
+    int fhop;
+    int mirrlen;
+    int fdlpwin;
+    int fdlpolap;
+    int nceps;
+    int* nframes;
+    float* energybands; // if do_spec
+    float* feats; // if !do_spec
+    float* hamm;
 };
 
 void cleanup_fdlpenv_plans()
@@ -1805,17 +1816,6 @@ float * fdlpenv_mod( float *p, int Np, int N, int myband )
     return env;
 }
 
-void* fdlpenv_pthread_wrapper(void* arg)
-{
-    struct fdlpenv_info* info = (struct fdlpenv_info*)arg;
-#if FDLPENV_WITH_INTERP == 1
-    info->env = fdlpenv_mod(info->poles, info->Np, info->fdlplen, info->band);
-#else
-    info->env = fdlpenv(info->poles, info->Np, info->fdlplen, info->band);
-#endif
-    return NULL;
-}
-
 void spec2cep(float * frames, int fdlpwin, int nframes, int ncep, int nbands, int band, int offset, float *feats, int log_flag) 
 {
 
@@ -1852,7 +1852,7 @@ void spec2cep(float * frames, int fdlpwin, int nframes, int ncep, int nbands, in
 		}
 		else
 		{
-		    feat[i] += /*icsi_*/log(frame[j]/*,LOOKUP_TABLE,nbits_log*/)*dctm[i*fdlpwin+j];
+		    feat[i] += icsi_log(frame[j],LOOKUP_TABLE,nbits_log)*dctm[i*fdlpwin+j];
 		}
 	    }
 	}
@@ -1895,7 +1895,7 @@ void spec2cep4energy(float * frames, int fdlpwin, int nframes, int ncep, float *
 		}
 		else
 		{
-		    feat[i] += (0.33* /*icsi_*/log(frame[j]/*,LOOKUP_TABLE,nbits_log*/))*dctm[i*fdlpwin+j]; //Cubic root compression and log
+		    feat[i] += (0.33* icsi_log(frame[j],LOOKUP_TABLE,nbits_log))*dctm[i*fdlpwin+j]; //Cubic root compression and log
 		}
 	    }
 	}
@@ -2076,6 +2076,151 @@ void audspec(float **bands, int *nbands, int nframes)
     *nbands = nfilts;
 }
 
+void* fdlpenv_pthread_wrapper(void* arg)
+{
+    struct fdlpenv_info* info = (struct fdlpenv_info*)arg;
+#if FDLPENV_WITH_INTERP == 1
+    float* env = fdlpenv_mod(info->poles, info->Np, info->fdlplen, info->band);
+#else
+    float* env = fdlpenv(info->poles, info->Np, info->fdlplen, info->band);
+#endif
+    int fnum = info->fnum;
+    int send1 = info->send;
+    int flen1 = info->flen;
+    int fhop1 = info->fhop;
+    int nframes = 0;
+    int mirr_len = info->mirrlen;
+    int fdlpwin = info->fdlpwin;
+    int fdlpolap = info->fdlpolap;
+    int nceps = info->nceps;
+    float* energybands = info->energybands;
+    float* feats = info->feats;
+    float* hamm = info->hamm;
+
+    if (do_spec)
+    {
+	float *frames = fconstruct_frames(&env, &send1, flen1, flen1-fhop1, &nframes);
+	for (int fr = 0; fr < fnum;fr++)
+	{
+	    float *envwind = frames+fr*flen1;
+	    float temp = 0;
+	    for (int ind =0;ind<flen1;ind++) 
+	    {
+		temp +=  envwind[ind]*hamm[ind];
+	    }
+
+	    energybands[fr*nbands+info->band]= temp;
+
+	    if (specgrm)
+	    {
+		feats[fr*nbands+info->band] = 0.33*log(temp);
+	    }
+	}
+	FREE(frames);
+	FREE(env);
+    }
+    else
+    {
+	int Npad1 = send1 + 2 * mirr_len;
+	float* env_pad1 = (float*) MALLOC(Npad1*sizeof(float));
+
+	int Npad2 = send1 + 1000/factor;
+	float* env_pad2 = (float*) MALLOC(Npad2 * sizeof(float));
+	float* env_log = (float*) MALLOC(Npad2 * sizeof(float));
+	float* env_adpt = (float*) MALLOC(Npad2 * sizeof(float));
+
+	for (int k =0;k<send1;k++)
+	{
+	    env_log[k] = icsi_log(env[k],LOOKUP_TABLE,nbits_log);     
+	    sleep(0);	// Found out that icsi log is too fast and gives errors 
+	}
+
+	for ( int n = 0; n < Npad1; n++ )
+	{
+	    if ( n < mirr_len )
+	    {
+		env_pad1[n] = env_log[mirr_len-1-n];
+	    }
+	    else if ( n >= mirr_len && n < mirr_len + send1 )
+	    {
+		env_pad1[n] = env_log[n-mirr_len];	    
+	    }
+	    else
+	    {
+		env_pad1[n] = env_log[send1-(n-mirr_len-send1+1)];
+	    }
+	}
+
+	float * frames = fconstruct_frames(&env_pad1, &Npad1, fdlpwin, fdlpolap, &nframes);
+
+	if (longterm_do_static == 1)
+	{
+	    spec2cep(frames, fdlpwin, nframes, nceps, nbands, info->band, 0, feats, 1 );
+	}
+
+	FREE(frames);
+
+	// do delta here
+	float maxenv = 0;
+	for ( int n = 0; n < Npad2; n++ )
+	{
+	    if ( n < 1000/factor )
+	    {
+		env_pad2[n] = env[0];
+	    }
+	    else
+	    {
+		env_pad2[n] = env[n-1000/factor];
+	    }
+
+	    if ( env_pad2[n] > maxenv )
+	    {
+		maxenv = env_pad2[n];
+	    }
+	}
+
+	for ( int n = 0; n < Npad2; n++ )
+	{
+	    env_pad2[n] /= maxenv;
+	}      
+
+	adapt_m(env_pad2,Npad2,Fs1,env_adpt);
+
+	for ( int n = 0; n < Npad1; n++ )
+	{
+	    if ( n < mirr_len )
+	    {
+		env_pad1[n] = env_adpt[mirr_len-1-n+1000/factor];
+	    }
+	    else if ( n >= mirr_len && n < mirr_len + send1 )
+	    {
+		env_pad1[n] = env_adpt[n-mirr_len+1000/factor];	    
+	    }
+	    else
+	    {
+		env_pad1[n] = env_adpt[send1-(n-mirr_len-send1+1)+1000/factor];
+	    }
+	}
+
+	frames = fconstruct_frames(&env_pad1, &Npad1, fdlpwin, fdlpolap, &nframes);
+
+	if (longterm_do_dynamic == 1)
+	{
+	    spec2cep(frames, fdlpwin, nframes, nceps, nbands, info->band, nceps * longterm_do_static, feats, 1);
+	}
+
+	FREE(frames);
+	FREE(env);
+
+	FREE(env_pad1);
+	FREE(env_pad2);
+	FREE(env_log);
+	FREE(env_adpt);
+    }
+    *(info->nframes) = nframes;
+    return NULL;
+}
+
 void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int nfeatfr, int numframes, int *dim)
 {
     int flen= DEFAULT_SHORTTERM_WINLEN_MS * Fs;   // frame length corresponding to 25ms
@@ -2091,21 +2236,21 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
     int fdlplen = send / factor;
     int trap = DEFAULT_LONGTERM_TRAP_FRAMECTX;  // 10 FRAME context duration
     int mirr_len = trap*fhop;
-    int fdlpwin = DEFAULT_LONGTERM_WINLEN_MS * Fs+flen;  // Modulation spectrum Computation Window.
-    int fdlpolap = fdlpwin - fhop;
+    int fdlpwin = (DEFAULT_LONGTERM_WINLEN_MS * Fs+flen)/factor;  // Modulation spectrum Computation Window.
+    int fdlpolap = fdlpwin - fhop/factor;
 
     int Np;
     float *p = fdlpfit_full_sig(x,N,Fs,&Np);
 
-    int Npad1 = send1+2*mirr_len;
-    float *env_pad1 = (float *) MALLOC(Npad1*sizeof(float));
+    //int Npad1 = send1+2*mirr_len;
+    //float *env_pad1 = (float *) MALLOC(Npad1*sizeof(float));
 
-    int Npad2 = send1+1000/factor;
-    float *env_pad2 = (float *) MALLOC(Npad2*sizeof(float));
-    float *env_log = (float *) MALLOC(Npad2*sizeof(float));	
-    float *env_adpt = (float *) MALLOC(Npad2*sizeof(float));
+    //int Npad2 = send1+1000/factor;
+    //float *env_pad2 = (float *) MALLOC(Npad2*sizeof(float));
+    //float *env_log = (float *) MALLOC(Npad2*sizeof(float));	
+    //float *env_adpt = (float *) MALLOC(Npad2*sizeof(float));
 
-    int nframes;
+    //int nframes;
     float *hamm = hamming(flen1);  // Defining the Hamming window
     float *energybands = (float *) MALLOC(fnum*nbands*sizeof(float)) ; //Energy of features	
 
@@ -2133,6 +2278,7 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 	fprintf(stderr, "Parameters: (nframes=%d,  dim=%d)\n", numframes, *dim); 
     }
 
+    int nframes = 0;
     struct fdlpenv_info* info = (struct fdlpenv_info*) MALLOC(nbands * sizeof(struct fdlpenv_info));
     for (int i = 0; i < nbands; i++ )
     {
@@ -2140,7 +2286,18 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 	info[i].Np = Np;
 	info[i].fdlplen = fdlplen;
 	info[i].band = i;
-	info[i].env = NULL;
+	info[i].fnum = fnum;
+	info[i].send = send1;
+	info[i].flen = flen1;
+	info[i].fhop = fhop1;
+	info[i].mirrlen = mirr_len;
+	info[i].fdlpwin = fdlpwin;
+	info[i].fdlpolap = fdlpolap;
+	info[i].nceps = *nceps;
+	info[i].nframes = &nframes;
+	info[i].energybands = energybands;
+	info[i].feats = *feats;
+	info[i].hamm = hamm;
 
 	pthread_create(&band_threads[i], NULL, fdlpenv_pthread_wrapper, (void*)&info[i]);
     }
@@ -2150,6 +2307,7 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 	pthread_join(band_threads[i], NULL);
     }
 
+	/*
     for (int i = 0; i < nbands; i++ )
     {
 	float* env = info[i].env;
@@ -2180,7 +2338,7 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 	{ 
 	    for (int k =0;k<send1;k++)
 	    {
-		env_log[k] = /*icsi_*/log(env[k]/*,LOOKUP_TABLE,nbits_log*/);     
+		env_log[k] = icsi_log(env[k],LOOKUP_TABLE,nbits_log);     
 		sleep(0);	// Found out that icsi log is too fast and gives errors 
 	    }
 
@@ -2262,6 +2420,7 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 	    FREE(env);
 	}
     }
+    */
 
     if (do_spec)
     {
@@ -2280,10 +2439,10 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 
     FREE(info);
 
-    FREE(env_pad1);
-    FREE(env_pad2);
-    FREE(env_adpt);
-    FREE(env_log);
+    //FREE(env_pad1);
+    //FREE(env_pad2);
+    //FREE(env_adpt);
+    //FREE(env_log);
     FREE(p);
     FREE(energybands);
     FREE(hamm);		
