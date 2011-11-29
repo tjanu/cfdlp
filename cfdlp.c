@@ -2450,7 +2450,7 @@ int main(int argc, char **argv)
     }
     pthread_mutex_destroy(&fftw_mutex);
     int mc = get_malloc_count();
-    if (mc != 0)
+    if (mc > 0)
 	fprintf(stderr,"WARNING: %d malloc'd items not free'd\n", mc);
 
     return 0;
