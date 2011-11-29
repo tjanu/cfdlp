@@ -5,8 +5,8 @@
 include $(top_srcdir)/Makefile-include.am
 include $(top_srcdir)/Makefile-tested.am
 
-AM_CFLAGS  +=  -O4 -std=c99 -Wall -lpthread -I$(COTS_PATH)/build$(RATS_ARCH_SUFFIX)/$(FFTW)/api
-AM_LDFLAGS   += -L$(COTS_PATH)/opt/$(FFTW)$(RATS_COMPILER_SUFFIX)$(RATS_ARCH_SUFFIX)/lib/ -l$(lib_FFTW) -lm
+AM_CFLAGS  +=  -O0 -g -std=c99 -Wall -I$(COTS_PATH)/build$(RATS_ARCH_SUFFIX)/$(FFTW)/api
+AM_LDFLAGS   += -L$(COTS_PATH)/opt/$(FFTW)$(RATS_COMPILER_SUFFIX)$(RATS_ARCH_SUFFIX)/lib/ -l$(lib_FFTW) -lm -lpthread
 
 
 bin_PROGRAMS = cfdlp

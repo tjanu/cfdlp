@@ -1852,7 +1852,8 @@ void spec2cep(float * frames, int fdlpwin, int nframes, int ncep, int nbands, in
 		}
 		else
 		{
-		    feat[i] += icsi_log(frame[j],LOOKUP_TABLE,nbits_log)*dctm[i*fdlpwin+j];
+		    //feat[i] += icsi_log(frame[j],LOOKUP_TABLE,nbits_log)*dctm[i*fdlpwin+j];
+		    feat[i] += log(frame[j])*dctm[i*fdlpwin+j];
 		}
 	    }
 	}
@@ -1895,7 +1896,8 @@ void spec2cep4energy(float * frames, int fdlpwin, int nframes, int ncep, float *
 		}
 		else
 		{
-		    feat[i] += (0.33* icsi_log(frame[j],LOOKUP_TABLE,nbits_log))*dctm[i*fdlpwin+j]; //Cubic root compression and log
+		    //feat[i] += (0.33*icsi_log(frame[j],LOOKUP_TABLE,nbits_log))*dctm[i*fdlpwin+j]; //Cubic root compression and log
+		    feat[i] += (0.33*log(frame[j]))*dctm[i*fdlpwin+j]; //Cubic root compression and log
 		}
 	    }
 	}
@@ -2131,7 +2133,8 @@ void* fdlpenv_pthread_wrapper(void* arg)
 
 	for (int k =0;k<send1;k++)
 	{
-	    env_log[k] = icsi_log(env[k],LOOKUP_TABLE,nbits_log);     
+	    //env_log[k] = icsi_log(env[k],LOOKUP_TABLE,nbits_log);     
+	    env_log[k] = log(env[k]);     
 	    sleep(0);	// Found out that icsi log is too fast and gives errors 
 	}
 
@@ -2338,7 +2341,8 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 	{ 
 	    for (int k =0;k<send1;k++)
 	    {
-		env_log[k] = icsi_log(env[k],LOOKUP_TABLE,nbits_log);     
+		//env_log[k] = icsi_log(env[k],LOOKUP_TABLE,nbits_log);     
+		env_log[k] = log(env[k]);     
 		sleep(0);	// Found out that icsi log is too fast and gives errors 
 	    }
 
@@ -2481,9 +2485,9 @@ int main(int argc, char **argv)
     int fdlpwin = fdplp_win_len_sec * FDLPWIN_SEC2SHORTTERMMULT_FACTOR * fwin;
     int fdlpolap = DEFAULT_FDLPWIN_SHIFT_MS * Fs;  
     int nframes;
-    int add_samp;
+    //int add_samp;
     float *frames = fconstruct_frames(&signal, &N, fdlpwin, fdlpolap, &nframes);
-    add_samp = N - Nsignal;
+    //add_samp = N - Nsignal;
 
     // read in VAD if we have to
     if (vadfile != NULL) {
@@ -2526,6 +2530,25 @@ int main(int argc, char **argv)
 	have_vadfile = 1;
 	vad_label_start = 0;
     }
+
+    // DEBUG
+    //FILE *fd = fopen("speech_signal.txt", "w");
+    //for (int i = 0; i < N; i++) {
+    //    fprintf(fd, "%d ", signal[i]);
+    //}
+    //fclose(fd);
+
+    //fprintf(stderr, "Created %d frames of %d samples each, overlap %d\n", nframes, fdlpwin, fdlpolap);
+
+    // DEBUG
+    //fd = fopen("speech_frames.txt", "w");
+    //for (int i = 0; i < nframes; i++) {
+    //    for (int j = 0; j < fdlpwin; j++) {
+    //        fprintf(fd, "%d ", frames[i * fdlpwin + j]);
+    //    }
+    //    fprintf(fd, "\n");
+    //}
+    //fclose(fd);
 
     // Compute the feature vector time series
     int nceps = num_cepstral_coeffs;
