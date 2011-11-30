@@ -48,6 +48,7 @@ void adapt_m(float * in, int N, float fsample, float * out);
 char *infile = NULL;
 char *outfile = NULL;
 char *printfile = NULL;
+char *specfile = NULL;
 int Fs = 8000;
 int factor = -1;
 int Fs1 = -1;
@@ -145,11 +146,15 @@ struct fdlpenv_info {
     float* poles;
     int Np;
     int fdlplen;
+    int ffdlplen;
     int band;
     int fnum;
     int send;
+    int fsend;
     int flen;
+    int fflen;
     int fhop;
+    int ffhop;
     int mirrlen;
     int fdlpwin;
     int fdlpolap;
@@ -157,7 +162,9 @@ struct fdlpenv_info {
     int* nframes;
     float* energybands; // if do_spec
     float* feats; // if !do_spec
+    float* spectrogram;
     float* hamm;
+    float* fhamm;
 };
 
 void run_threads(struct thread_info* threads, int numthreads)
@@ -431,6 +438,8 @@ void usage()
 	    " -i <str>\t\tInput file name. Only signed 16-bit little endian raw files are supported. REQUIRED\n"
 	    " -o <str>\t\tOutput file name for raw binary float output. Either this or -print is REQUIRED\n"
 	    " -print <str>\t\tOutput file name for ascii output, one frame per line. Either this or -o is REQUIRED\n"
+	    " -so <str>\t\tOutput file name for spectrogram output in addition to normal features (do NOT use -specgram with this option)\n"
+	    "\t\t\t\tPlease be aware that, if wiener filtering is used, the alpha parameter affects the spectrum and the -specgram flag internally sets the feature type to 1 (default alpha 0.1)\n"
 	    " -sr <str>\t\tInput samplerate in Hertz. Only 8000 and 16000 Hz are supported. (8000)\n"
 
 	    "\nWindowing options:\n\n"
@@ -501,6 +510,10 @@ void parse_args(int argc, char **argv)
 	{
 	    printfile = argv[++i];
 	}
+	else if ( strcmp(argv[i], "-so") == 0 )
+	{
+	    specfile = argv[++i];
+	}
 	else if ( strcmp(argv[i], "-sr") == 0 )
 	{
 	    Fs = atoi(argv[++i]);
@@ -550,7 +563,7 @@ void parse_args(int argc, char **argv)
 	}
 	else if ( strcmp(argv[i], "-specgram") == 0 )
 	{
-	    specgrm = atoi(argv[++i]); if (specgrm) do_spec = 1;
+	    specgrm = atoi(argv[++i]);
 	}
 	else if ( strcmp(argv[i], "-limit-range") == 0 )
 	{
@@ -676,6 +689,11 @@ void parse_args(int argc, char **argv)
     {
 	fprintf(stderr, "Linear frequency axis is only available for short-term (spectral) features.\n");
 	usage();
+    }
+
+    if (specgrm)
+    {
+	do_spec = 1;
     }
 
     if (!wiener_alpha_given && do_spec)
@@ -1440,7 +1458,6 @@ int *read_VAD(int N, int Fs, int* Nindices)
     if (vad_label_start + fnum > num_vad_labels) {
 	fatal("Not enough VAD labels left?!");
     }
-    fprintf(stderr, "read_vad: Returning labels for %d frames starting at %d\n", fnum, vad_label_start);
     for (int i = 0; i < fnum; i++) {
 	if (vad_labels[vad_label_start + i] == 0) {
 	    indices[(*Nindices)++] = i;
@@ -2279,10 +2296,19 @@ void audspec(float **bands, int *nbands, int nframes)
 void* fdlpenv_pthread_wrapper(void* arg)
 {
     struct fdlpenv_info* info = (struct fdlpenv_info*)arg;
+    float* fenv = NULL;
 #if FDLPENV_WITH_INTERP == 1
     float* env = fdlpenv_mod(info->poles, info->Np, info->fdlplen, info->band);
+    if (specfile != NULL && factor != 1)
+    {
+	fenv = fdlpenv_mod(info->poles, info->Np, info->ffdlplen, info->band);
+    }
 #else
     float* env = fdlpenv(info->poles, info->Np, info->fdlplen, info->band);
+    if (specfile != NULL && factor != 1)
+    {
+	fenv = fdlpenv(info->poles, info->Np, info->ffdlplen, info->band);
+    }
 #endif
     int fnum = info->fnum;
     int send1 = info->send;
@@ -2293,20 +2319,50 @@ void* fdlpenv_pthread_wrapper(void* arg)
     int fdlpwin = info->fdlpwin;
     int fdlpolap = info->fdlpolap;
     int nceps = info->nceps;
+    int flen = info->fflen;
+    int fhop = info->ffhop;
+    int send = info->fsend;
     float* energybands = info->energybands;
     float* feats = info->feats;
+    float *spectrogram = info->spectrogram;
     float* hamm = info->hamm;
+    float *fhamm = info->fhamm;
 
-    if (do_spec)
+    if (do_spec || specfile != NULL)
     {
 	float *frames = fconstruct_frames(&env, &send1, flen1, flen1-fhop1, &nframes);
+	float *fframes = NULL;
+	if (fenv != NULL)
+	{
+	    int nframes2 = 0;
+	    fframes = fconstruct_frames(&fenv, &send, flen, flen-fhop, &nframes2);
+	    if (nframes2 != nframes)
+		fatal("Number of frames different with and without downsampling?!");
+	}
 	for (int fr = 0; fr < fnum;fr++)
 	{
 	    float *envwind = frames+fr*flen1;
 	    float temp = 0;
+	    float *fenvwind = NULL;
+	    float ftemp = 0;
+	    if (fenv != NULL)
+	    {
+		fenvwind = fframes + fr * flen;
+	    }
 	    for (int ind =0;ind<flen1;ind++) 
 	    {
 		temp +=  envwind[ind]*hamm[ind];
+		if (fenvwind)
+		{
+		    ftemp += fenvwind[ind] * fhamm[ind];
+		}
+	    }
+	    if (fenvwind)
+	    {
+		for (int ind = flen1; ind < flen; ind++)
+		{
+		    ftemp += fenvwind[ind] * fhamm[ind];
+		}
 	    }
 
 	    energybands[fr*nbands+info->band]= temp;
@@ -2315,11 +2371,25 @@ void* fdlpenv_pthread_wrapper(void* arg)
 	    {
 		feats[fr*nbands+info->band] = 0.33*log(temp);
 	    }
+	    if (specfile != NULL)
+	    {
+		float value = temp;
+		if (fenvwind)
+		{
+		    value = ftemp;
+		}
+		spectrogram[fr*nbands+info->band] = 0.33*log(value);
+	    }
 	}
 	FREE(frames);
 	FREE(env);
+	if (fenv)
+	{
+	    FREE(fframes);
+	    FREE(fenv);
+	}
     }
-    else
+    else if (!do_spec)
     {
 	int Npad1 = send1 + 2 * mirr_len;
 	float* env_pad1 = (float*) MALLOC(Npad1*sizeof(float));
@@ -2422,7 +2492,7 @@ void* fdlpenv_pthread_wrapper(void* arg)
     return NULL;
 }
 
-void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int nfeatfr, int numframes, int *dim)
+void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int nfeatfr, int numframes, int *dim, float **spectrogram)
 {
     int flen= DEFAULT_SHORTTERM_WINLEN_MS * Fs;   // frame length corresponding to 25ms
     int flen1 = flen / factor;
@@ -2453,6 +2523,11 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 
     //int nframes;
     float *hamm = hamming(flen1);  // Defining the Hamming window
+    float *fhamm = NULL;
+    if (specfile)
+    {
+	fhamm = hamming(flen);
+    }
     float *energybands = (float *) MALLOC(fnum*nbands*sizeof(float)) ; //Energy of features	
 
     if (*feats == NULL)
@@ -2476,6 +2551,10 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 	}
 
 	*feats = (float *)MALLOC(nfeatfr * numframes * (*dim) * sizeof(float));
+	if (specfile)
+	{
+	    *spectrogram = (float*) MALLOC(nfeatfr * numframes * nbands * sizeof(float));
+	}
 	fprintf(stderr, "Parameters: (nframes=%d,  dim=%d)\n", numframes, *dim); 
     }
 
@@ -2486,11 +2565,15 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 	info[i].poles = p + i*(Np+1);
 	info[i].Np = Np;
 	info[i].fdlplen = fdlplen;
+	info[i].ffdlplen = N;
 	info[i].band = i;
 	info[i].fnum = fnum;
 	info[i].send = send1;
+	info[i].fsend = send;
 	info[i].flen = flen1;
+	info[i].fflen = flen;
 	info[i].fhop = fhop1;
+	info[i].ffhop = fhop;
 	info[i].mirrlen = mirr_len;
 	info[i].fdlpwin = fdlpwin;
 	info[i].fdlpolap = fdlpolap;
@@ -2498,129 +2581,15 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 	info[i].nframes = &nframes;
 	info[i].energybands = energybands;
 	info[i].feats = *feats;
+	info[i].spectrogram = *spectrogram;
 	info[i].hamm = hamm;
+	info[i].fhamm = fhamm;
 
 	band_threads[i].threadfunc = fdlpenv_pthread_wrapper;
 	band_threads[i].thread_arg = (void*) &info[i];
     }
 
     run_threads(band_threads, nbands);
-
-    /*
-    for (int i = 0; i < nbands; i++ )
-    {
-	float* env = info[i].env;
-	if (do_spec)
-	{
-	    float *frames = fconstruct_frames(&env, &send1, flen1, flen1-fhop1, &nframes);
-	    for (int fr = 0; fr < fnum;fr++)
-	    {
-		float *envwind = frames+fr*flen1;
-		float temp = 0;
-		for (int ind =0;ind<flen1;ind++) 
-		{
-		    temp +=  envwind[ind]*hamm[ind];
-		}
-
-		energybands[fr*nbands+i]= temp;
-
-		if (specgrm)
-		{
-		    (*feats)[fr*nbands+i] = 0.33*log(temp);
-		}
-	    }
-	    FREE(frames);
-	    FREE(env);
-
-	}
-	else
-	{ 
-	    for (int k =0;k<send1;k++)
-	    {
-		//env_log[k] = icsi_log(env[k],LOOKUP_TABLE,nbits_log);     
-		env_log[k] = log(env[k]);     
-		sleep(0);	// Found out that icsi log is too fast and gives errors 
-	    }
-
-	    for ( int n = 0; n < Npad1; n++ )
-	    {
-		if ( n < mirr_len )
-		{
-		    env_pad1[n] = env_log[mirr_len-1-n];
-		}
-		else if ( n >= mirr_len && n < mirr_len + send1 )
-		{
-		    env_pad1[n] = env_log[n-mirr_len];	    
-		}
-		else
-		{
-		    env_pad1[n] = env_log[send-(n-mirr_len-send1+1)];
-		}
-	    }
-
-	    float * frames = fconstruct_frames(&env_pad1, &Npad1, fdlpwin, fdlpolap, &nframes);
-
-	    if (longterm_do_static == 1)
-	    {
-		spec2cep(frames, fdlpwin, nframes, *nceps, nbands, i, 0, *feats, 1 );
-	    }
-
-	    FREE(frames);
-
-	    // do delta here
-	    float maxenv = 0;
-	    for ( int n = 0; n < Npad2; n++ )
-	    {
-		if ( n < 1000/factor )
-		{
-		    env_pad2[n] = env[0];
-		}
-		else
-		{
-		    env_pad2[n] = env[n-1000/factor];
-		}
-
-		if ( env_pad2[n] > maxenv )
-		{
-		    maxenv = env_pad2[n];
-		}
-	    }
-
-	    for ( int n = 0; n < Npad2; n++ )
-	    {
-		env_pad2[n] /= maxenv;
-	    }      
-
-	    adapt_m(env_pad2,Npad2,Fs1,env_adpt);
-
-	    for ( int n = 0; n < Npad1; n++ )
-	    {
-		if ( n < mirr_len )
-		{
-		    env_pad1[n] = env_adpt[mirr_len-1-n+1000/factor];
-		}
-		else if ( n >= mirr_len && n < mirr_len + send1 )
-		{
-		    env_pad1[n] = env_adpt[n-mirr_len+1000/factor];	    
-		}
-		else
-		{
-		    env_pad1[n] = env_adpt[send-(n-mirr_len-send1+1)+1000/factor];
-		}
-	    }
-
-	    frames = fconstruct_frames(&env_pad1, &Npad1, fdlpwin, fdlpolap, &nframes);
-
-	    if (longterm_do_dynamic == 1)
-	    {
-		spec2cep(frames, fdlpwin, nframes, *nceps, nbands, i, *nceps * longterm_do_static, *feats, 1);
-	    }
-
-	    FREE(frames);
-	    FREE(env);
-	}
-    }
-    */
 
     if (do_spec)
     {
@@ -2646,6 +2615,10 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
     FREE(p);
     FREE(energybands);
     FREE(hamm);		
+    if (fhamm)
+    {
+	FREE(fhamm);
+    }
 }
 
 
@@ -2751,6 +2724,7 @@ int main(int argc, char **argv)
     int nfeatfr_calculated = 0;
 
     float *feats = NULL;
+    float *spectrogram = NULL;
 
     tic();
     int stop_before = 0;
@@ -2780,12 +2754,13 @@ int main(int argc, char **argv)
 
 	if (feats == NULL)
 	{
-	    compute_fdlp_feats( xwin, local_size, Fs, &nceps, &feats, nfeatfr, nframes, &dim );
+	    compute_fdlp_feats( xwin, local_size, Fs, &nceps, &feats, nfeatfr, nframes, &dim, &spectrogram );
 	}
 	else
 	{
 	    float *feat_mem = feats + nfeatfr_calculated * dim;
-	    compute_fdlp_feats( xwin, local_size, Fs, &nceps, &feat_mem, nfeatfr, nframes, &dim );
+	    float *specgram_mem = spectrogram + (specfile == NULL ? 0 : nfeatfr_calculated * nbands);
+	    compute_fdlp_feats( xwin, local_size, Fs, &nceps, &feat_mem, nfeatfr, nframes, &dim, &specgram_mem );
 	}
 	printf("\n"); 
 	nfeatfr_calculated += nfeatfr;
@@ -2804,6 +2779,11 @@ int main(int argc, char **argv)
 	fprintf(stderr, "Print file = %s (%d frames, dimension %d)\n", printfile, fnum, dim);
 	printfeats_file(printfile, feats, dim, fnum);
     }
+    if (specfile)
+    {
+	fprintf(stderr, "Spectrogram output file = %s (%d frames, dimension %d)\n", outfile, fnum, nbands);
+	writefeats_file(specfile, spectrogram, nbands, fnum);
+    }
 
     // Free the heap
     cleanup_fftw_plans();
@@ -2815,7 +2795,9 @@ int main(int argc, char **argv)
     FREE(feats);
     FREE(orig_wts);
     FREE(orig_indices);
-    if (!(specgrm))
+    if (spectrogram != NULL)
+	FREE(spectrogram);
+    if (dctm)
 	FREE(dctm);
     if (fft2decompm != NULL)
 	FREE(fft2decompm);
