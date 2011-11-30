@@ -1,3 +1,8 @@
+#define _GNU_SOURCE
+#if HAVE_CONFIG_H
+#include <config.h>
+#endif
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -9,7 +14,9 @@
 #include <fftw3.h>
 #include "adapt.h"
 
+#if HAVE_LIBPTHREAD == 1
 #include <pthread.h>
+#endif
 
 # define pi 3.14159265
 void adapt_m(float * in, int N, float fsample, float * out);
@@ -101,8 +108,26 @@ double** fdlpenv_input_buffers = NULL;
 complex** fdlpenv_output_buffers = NULL;
 
 // Multithreading
-pthread_t* band_threads = NULL;
+int max_num_threads = 1;
+struct thread_info {
+#if HAVE_LIBPTHREAD == 1
+    pthread_t thread_id;
+#endif
+    void* (*threadfunc)(void* arg);
+    void* thread_arg;
+};
+
+#if HAVE_LIBPTHREAD == 1
+struct running_thread {
+    pthread_t* thread_id;
+    struct running_thread* next;
+};
+#endif
+
+struct thread_info* band_threads = NULL;
+#if HAVE_LIBPTHREAD == 1
 pthread_mutex_t fftw_mutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
 
 struct lpc_info {
     double* y;
@@ -135,6 +160,90 @@ struct fdlpenv_info {
     float* hamm;
 };
 
+void run_threads(struct thread_info* threads, int numthreads)
+{
+    int i = 0;
+    int curr_num_threads = 0;
+#if HAVE_LIBPTHREAD == 1
+    struct running_thread* running_threads = NULL;
+#endif
+    while (i < numthreads)
+    {
+#if HAVE_LIBPTHREAD == 1
+	if (max_num_threads < 0 || curr_num_threads < max_num_threads)
+	{
+	    pthread_create(&threads[i].thread_id, NULL, threads[i].threadfunc, threads[i].thread_arg);
+	    struct running_thread* new_runner = (struct running_thread*) MALLOC(sizeof(struct running_thread));
+	    new_runner->thread_id = &threads[i].thread_id;
+	    new_runner->next = NULL;
+	    struct running_thread* list_end = running_threads;
+	    if (list_end == NULL)
+	    {
+		running_threads = new_runner;
+	    }
+	    else
+	    {
+		while (list_end != NULL && list_end->next != NULL)
+		{
+		    list_end = list_end->next;
+		}
+		list_end->next = new_runner;
+	    }
+	    curr_num_threads++;
+	    i++;
+	}
+	// clean up running thread list in case anything is already finished
+	struct running_thread* last = NULL;
+	for (struct running_thread* current = running_threads; current != NULL; )
+	{
+	    int errcode = pthread_tryjoin_np(*(current->thread_id), NULL);
+	    if (errcode == 0)
+	    {
+		// get it out of the list
+		if (last == NULL)
+		{
+		    // first in the list
+		    running_threads = current->next;
+		    FREE(current);
+		    current = running_threads;
+		}
+		else
+		{
+		    // have to get it out of the list...
+		    struct running_thread* tmp = current;
+		    last->next = current->next;
+		    current = current->next;
+		    FREE(tmp);
+		}
+		curr_num_threads--;
+	    }
+	    else
+	    {
+		last = current;
+		current = current->next;
+	    }
+	}
+	if (max_num_threads > 0 && curr_num_threads >= max_num_threads)
+	{
+	    sleep(1);
+	}
+#else
+	threads[i].threadfunc(threads[i].thread_arg);
+	i++;
+#endif
+    }
+#if HAVE_LIBPTHREAD == 1
+    // wait for all threads to finish
+    while (running_threads != NULL)
+    {
+	pthread_join(*(running_threads->thread_id), NULL);
+	struct running_thread* tmp = running_threads;
+	running_threads = running_threads->next;
+	FREE(tmp);
+    }
+#endif
+}
+
 void cleanup_fdlpenv_plans()
 {
     for (int i = 0; i < nbands; i++)
@@ -143,9 +252,13 @@ void cleanup_fdlpenv_plans()
 	{
 	    if (fdlpenv_plans[i] != NULL)
 	    {
+#if HAVE_LIBPTHREAD == 1
 		pthread_mutex_lock(&fftw_mutex);
+#endif
 		fftw_destroy_plan(fdlpenv_plans[i]);
+#if HAVE_LIBPTHREAD == 1
 		pthread_mutex_unlock(&fftw_mutex);
+#endif
 	    }
 	}
 	if (fdlpenv_input_buffers != NULL)
@@ -193,9 +306,13 @@ void cleanup_lpc_plans()
 	{
 	    if (lpc_r2c_plans[i] != NULL)
 	    {
+#if HAVE_LIBPTHREAD == 1
 		pthread_mutex_lock(&fftw_mutex);
+#endif
 		fftw_destroy_plan(lpc_r2c_plans[i]);
+#if HAVE_LIBPTHREAD == 1
 		pthread_mutex_unlock(&fftw_mutex);
+#endif
 	    }
 	}
 	if (lpc_r2c_input_buffers != NULL)
@@ -216,9 +333,13 @@ void cleanup_lpc_plans()
 	{
 	    if (lpc_c2r_plans[i] != NULL)
 	    {
+#if HAVE_LIBPTHREAD == 1
 		pthread_mutex_lock(&fftw_mutex);
+#endif
 		fftw_destroy_plan(lpc_c2r_plans[i]);
+#if HAVE_LIBPTHREAD == 1
 		pthread_mutex_unlock(&fftw_mutex);
+#endif
 	    }
 	}
 	if (lpc_c2r_input_buffers != NULL)
@@ -282,9 +403,13 @@ void cleanup_fftw_plans()
 {
     if (dct_plan != NULL)
     {
+#if HAVE_LIBPTHREAD == 1
 	pthread_mutex_lock(&fftw_mutex);
+#endif
 	fftw_destroy_plan(dct_plan);
+#if HAVE_LIBPTHREAD == 1
 	pthread_mutex_unlock(&fftw_mutex);
+#endif
     }
     if (dct_buffer != NULL)
     {
@@ -345,6 +470,11 @@ void usage()
 	    " -speechchar <char>\tthe char representing speech in the VAD file ('1')\n"
 	    " -nonspeechchar <char>\tthe char representing non-speech in the VAD file ('0')\n"
 	    " -vad-grace <int>\tmaximum difference between number of frames in VAD file compared to how many are computed. If there are less frames in the VAD file, the last VAD label gets repeated. (2)\n"
+
+#if HAVE_LIBPTHREAD == 1
+	    "\nMultithreading options:\n\n"
+	    " -max-threads <int>:\tMaximum number of threads to use. -1 means no limit, i.e. as many threads as there are bands (1)\n"
+#endif
 	    );
 }
 
@@ -523,6 +653,12 @@ void parse_args(int argc, char **argv)
 	{
 	    Fs1 = atoi(argv[++i]);
 	}
+#if HAVE_LIBPTHREAD == 1
+	else if ( strcmp(argv[i], "-max-threads") == 0 )
+	{
+	    max_num_threads = atoi(argv[++i]);
+	}
+#endif
 	else
 	{
 	    fprintf(stderr, "unknown arg: %s\n", argv[i]);
@@ -950,9 +1086,13 @@ void lpc( double *y, int len, int order, int compr, float *poles, int myband )
 	lpc_r2c_plan_sizes[myband] = N;
 	if (lpc_r2c_plans[myband] != NULL)
 	{
+#if HAVE_LIBPTHREAD == 1
 	    pthread_mutex_lock(&fftw_mutex);
+#endif
 	    fftw_destroy_plan(lpc_r2c_plans[myband]);
+#if HAVE_LIBPTHREAD == 1
 	    pthread_mutex_unlock(&fftw_mutex);
+#endif
 	    lpc_r2c_plans[myband] = NULL;
 	}
 	if (lpc_r2c_input_buffers[myband] != NULL)
@@ -1002,13 +1142,17 @@ void lpc( double *y, int len, int order, int compr, float *poles, int myband )
 
     if (lpc_r2c_plans[myband] == NULL)
     {
+#if HAVE_LIBPTHREAD == 1
 	pthread_mutex_lock(&fftw_mutex);
+#endif
 	lpc_r2c_plans[myband] = fftw_plan_dft_r2c_1d(
 		lpc_r2c_plan_sizes[myband],
 		lpc_r2c_input_buffers[myband],
 		lpc_r2c_output_buffers[myband],
 		FFTW_ESTIMATE);
+#if HAVE_LIBPTHREAD == 1
 	pthread_mutex_unlock(&fftw_mutex);
+#endif
     }
     fftw_execute(lpc_r2c_plans[myband]);
 
@@ -1025,13 +1169,17 @@ void lpc( double *y, int len, int order, int compr, float *poles, int myband )
     }
     if (lpc_c2r_plans[myband] == NULL)
     {
+#if HAVE_LIBPTHREAD == 1
 	pthread_mutex_lock(&fftw_mutex);
+#endif
 	lpc_c2r_plans[myband] = fftw_plan_dft_c2r_1d(
 		lpc_r2c_plan_sizes[myband],
 		lpc_r2c_output_buffers[myband],
 		lpc_c2r_output_buffers[myband],
 		FFTW_ESTIMATE);
+#if HAVE_LIBPTHREAD == 1
 	pthread_mutex_unlock(&fftw_mutex);
+#endif
     }
     fftw_execute(lpc_c2r_plans[myband]);
     for ( int n = 0; n < N; n++ )
@@ -1054,9 +1202,13 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 	lpc_r2c_plan_sizes[myband] = N;
 	if (lpc_r2c_plans[myband] != NULL)
 	{
+#if HAVE_LIBPTHREAD == 1
 	    pthread_mutex_lock(&fftw_mutex);
+#endif
 	    fftw_destroy_plan(lpc_r2c_plans[myband]);
+#if HAVE_LIBPTHREAD == 1
 	    pthread_mutex_unlock(&fftw_mutex);
+#endif
 	    lpc_r2c_plans[myband] = NULL;
 	}
 	if (lpc_r2c_input_buffers[myband] != NULL)
@@ -1092,13 +1244,17 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     }
     if (lpc_r2c_plans[myband] == NULL)
     {
+#if HAVE_LIBPTHREAD == 1
 	pthread_mutex_lock(&fftw_mutex);
+#endif
 	lpc_r2c_plans[myband] = fftw_plan_dft_r2c_1d(
 		lpc_r2c_plan_sizes[myband],
 		lpc_r2c_input_buffers[myband],
 		lpc_r2c_output_buffers[myband],
 		FFTW_ESTIMATE);
+#if HAVE_LIBPTHREAD == 1
 	pthread_mutex_unlock(&fftw_mutex);
+#endif
     }
     fftw_execute(lpc_r2c_plans[myband]);
 
@@ -1185,9 +1341,13 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 	lpc_c2r_plan_sizes[myband] = N;
 	if (lpc_c2r_plans[myband] != NULL)
 	{
+#if HAVE_LIBPTHREAD == 1
 	    pthread_mutex_lock(&fftw_mutex);
+#endif
 	    fftw_destroy_plan(lpc_c2r_plans[myband]);
+#if HAVE_LIBPTHREAD == 1
 	    pthread_mutex_unlock(&fftw_mutex);
+#endif
 	    lpc_c2r_plans[myband] = NULL;
 	}
 	if (lpc_c2r_input_buffers[myband] != NULL)
@@ -1225,13 +1385,17 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 
     if (lpc_c2r_plans[myband] == NULL)
     {
+#if HAVE_LIBPTHREAD == 1
 	pthread_mutex_lock(&fftw_mutex);
+#endif
 	lpc_c2r_plans[myband] = fftw_plan_dft_c2r_1d(
 		lpc_c2r_plan_sizes[myband],
 		lpc_c2r_input_buffers[myband],
 		lpc_c2r_output_buffers[myband],
 		FFTW_ESTIMATE);
+#if HAVE_LIBPTHREAD == 1
 	pthread_mutex_unlock(&fftw_mutex);
+#endif
     }
     fftw_execute(lpc_c2r_plans[myband]);
 
@@ -1418,9 +1582,13 @@ float * fdlpfit_full_sig(float *x, int N, int Fs, int *Np)
     {
 	if (dct_plan != NULL)
 	{
+#if HAVE_LIBPTHREAD == 1
 	    pthread_mutex_lock(&fftw_mutex);
+#endif
 	    fftw_destroy_plan(dct_plan);
+#if HAVE_LIBPTHREAD == 1
 	    pthread_mutex_unlock(&fftw_mutex);
+#endif
 	    dct_plan = NULL;
 	}
 	if (dct_buffer != NULL)
@@ -1430,9 +1598,13 @@ float * fdlpfit_full_sig(float *x, int N, int Fs, int *Np)
 	}
 	dct_plan_size = N;
 	dct_buffer = (double *) MALLOC(dct_plan_size * sizeof(double));
+#if HAVE_LIBPTHREAD == 1
 	pthread_mutex_lock(&fftw_mutex);
+#endif
 	dct_plan = fftw_plan_r2r_1d(dct_plan_size, dct_buffer, dct_buffer, FFTW_REDFT10, FFTW_ESTIMATE);
+#if HAVE_LIBPTHREAD == 1
 	pthread_mutex_unlock(&fftw_mutex);
+#endif
     }
 
     for ( int n = 0; n < N; n++ )
@@ -1586,7 +1758,7 @@ float * fdlpfit_full_sig(float *x, int N, int Fs, int *Np)
 
     if (band_threads == NULL)
     {
-	band_threads = (pthread_t*) MALLOC(nbands * sizeof(pthread_t));
+	band_threads = (struct thread_info*) MALLOC(nbands * sizeof(struct thread_info));
     }
     
     fprintf(stderr, "Number of sub-bands = %d\n", nbands);	
@@ -1634,12 +1806,16 @@ float * fdlpfit_full_sig(float *x, int N, int Fs, int *Np)
 	info[i].Nindices = NNIS;
 	info[i].band = i;
 
-	pthread_create(&band_threads[i], NULL, lpc_pthread_wrapper, (void*)&info[i]);
+	band_threads[i].threadfunc = lpc_pthread_wrapper;
+	band_threads[i].thread_arg = (void*)&info[i];
+	//pthread_create(&band_threads[i], NULL, lpc_pthread_wrapper, (void*)&info[i]);
     }
+
+    run_threads(band_threads, nbands);
 
     for (int i = 0; i < nbands; i++)
     {
-	pthread_join(band_threads[i], NULL);
+	//pthread_join(band_threads[i], NULL);
 	FREE(y_filt[i]);
     }
 
@@ -1663,9 +1839,13 @@ float * fdlpenv( float *p, int Np, int N, int myband )
 	fdlpenv_plan_sizes[myband] = nfft;
 	if (fdlpenv_plans[myband] != NULL)
 	{
+#if HAVE_LIBPTHREAD == 1
 	    pthread_mutex_lock(&fftw_mutex);
+#endif
 	    fftw_destroy_plan(fdlpenv_plans[myband]);
+#if HAVE_LIBPTHREAD == 1
 	    pthread_mutex_unlock(&fftw_mutex);
+#endif
 	    fdlpenv_plans[myband] = NULL;
 	}
 	if (fdlpenv_input_buffers[myband] != NULL)
@@ -1703,13 +1883,17 @@ float * fdlpenv( float *p, int Np, int N, int myband )
 
     if (fdlpenv_plans[myband] == NULL)
     {
+#if HAVE_LIBPTHREAD == 1
 	pthread_mutex_lock(&fftw_mutex);
+#endif
 	fdlpenv_plans[myband] = fftw_plan_dft_r2c_1d(
 		fdlpenv_plan_sizes[myband],
 		fdlpenv_input_buffers[myband],
 		fdlpenv_output_buffers[myband],
 		FFTW_ESTIMATE);
+#if HAVE_LIBPTHREAD == 1
 	pthread_mutex_unlock(&fftw_mutex);
+#endif
     }
     fftw_execute(fdlpenv_plans[myband]);
 
@@ -1732,9 +1916,13 @@ float * fdlpenv_mod( float *p, int Np, int N, int myband )
 	fdlpenv_plan_sizes[myband] = nfft;
 	if (fdlpenv_plans[myband] != NULL)
 	{
+#if HAVE_LIBPTHREAD == 1
 	    pthread_mutex_lock(&fftw_mutex);
+#endif
 	    fftw_destroy_plan(fdlpenv_plans[myband]);
+#if HAVE_LIBPTHREAD == 1
 	    pthread_mutex_unlock(&fftw_mutex);
+#endif
 	    fdlpenv_plans[myband] = NULL;
 	}
 	if (fdlpenv_input_buffers[myband] != NULL)
@@ -1771,13 +1959,17 @@ float * fdlpenv_mod( float *p, int Np, int N, int myband )
     }
     if (fdlpenv_plans[myband] == NULL)
     {
+#if HAVE_LIBPTHREAD == 1
 	pthread_mutex_lock(&fftw_mutex);
+#endif
 	fdlpenv_plans[myband] = fftw_plan_dft_r2c_1d(
 		fdlpenv_plan_sizes[myband],
 		fdlpenv_input_buffers[myband],
 		fdlpenv_output_buffers[myband],
 		FFTW_ESTIMATE);
+#if HAVE_LIBPTHREAD == 1
 	pthread_mutex_unlock(&fftw_mutex);
+#endif
     }
     fftw_execute(fdlpenv_plans[myband]);
 
@@ -1819,7 +2011,9 @@ float * fdlpenv_mod( float *p, int Np, int N, int myband )
 void spec2cep(float * frames, int fdlpwin, int nframes, int ncep, int nbands, int band, int offset, float *feats, int log_flag) 
 {
 
+#if HAVE_LIBPTHREAD == 1
     pthread_mutex_lock(&fftw_mutex);
+#endif
     if ( dctm == NULL )
     {
 	dctm = (float *) MALLOC(fdlpwin*ncep*sizeof(float));
@@ -1836,7 +2030,9 @@ void spec2cep(float * frames, int fdlpwin, int nframes, int ncep, int nbands, in
 	    }
 	}
     }
+#if HAVE_LIBPTHREAD == 1
     pthread_mutex_unlock(&fftw_mutex);
+#endif
 
     int dimmult = longterm_do_static + longterm_do_dynamic;
     for ( int f = 0; f < nframes; f++ )
@@ -2240,7 +2436,7 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
     int send1 = send / factor;
     int fdlplen = send / factor;
     int trap = DEFAULT_LONGTERM_TRAP_FRAMECTX;  // 10 FRAME context duration
-    int mirr_len = trap*fhop;
+    int mirr_len = trap*fhop1;
     int fdlpwin = (DEFAULT_LONGTERM_WINLEN_MS * Fs+flen)/factor;  // Modulation spectrum Computation Window.
     int fdlpolap = fdlpwin - fhop/factor;
 
@@ -2304,15 +2500,13 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 	info[i].feats = *feats;
 	info[i].hamm = hamm;
 
-	pthread_create(&band_threads[i], NULL, fdlpenv_pthread_wrapper, (void*)&info[i]);
+	band_threads[i].threadfunc = fdlpenv_pthread_wrapper;
+	band_threads[i].thread_arg = (void*) &info[i];
     }
 
-    for (int i = 0; i < nbands; i++)
-    {
-	pthread_join(band_threads[i], NULL);
-    }
+    run_threads(band_threads, nbands);
 
-	/*
+    /*
     for (int i = 0; i < nbands; i++ )
     {
 	float* env = info[i].env;
@@ -2459,7 +2653,9 @@ int main(int argc, char **argv)
 { 
     parse_args(argc, argv);
 
+#if HAVE_LIBPTHREAD == 1
     pthread_mutex_init(&fftw_mutex, NULL);
+#endif
 
     LOOKUP_TABLE = (float*) MALLOC(((int) pow(2,nbits_log))*sizeof(float));
     fill_icsi_log_table(nbits_log,LOOKUP_TABLE); 
@@ -2503,9 +2699,6 @@ int main(int argc, char **argv)
 	if (labels[num_read_labels - 1] == '\n') {
 	    num_read_labels--;
 	}
-	fprintf(stderr, "Number of frames to label: %d, number of labels in file: %d\n", num_vad_labels, num_read_labels);
-	fprintf(stderr, "VAD grace? %d\n", vad_grace);
-	fprintf(stderr, "Truncate_last? %d\n", truncate_last);
 	vad_labels = (int *)MALLOC(num_vad_labels * sizeof(int));
 	for (int i = 0; i < num_vad_labels; i++) {
 	    if (i < num_read_labels) {
@@ -2597,7 +2790,6 @@ int main(int argc, char **argv)
 	printf("\n"); 
 	nfeatfr_calculated += nfeatfr;
 	vad_label_start = nfeatfr_calculated;
-	fprintf(stderr, "Just computed %d frames, now have %d frames calculated in total.\n", nfeatfr, nfeatfr_calculated);
 
 	fprintf(stderr, "%f s\n",toc());
     }
@@ -2632,7 +2824,9 @@ int main(int argc, char **argv)
     {
 	FREE(band_threads);
     }
+#if HAVE_LIBPTHREAD == 1
     pthread_mutex_destroy(&fftw_mutex);
+#endif
     int mc = get_malloc_count();
     if (mc > 0)
 	fprintf(stderr,"WARNING: %d malloc'd items not free'd\n", mc);
