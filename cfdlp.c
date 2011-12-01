@@ -2808,10 +2808,11 @@ int main(int argc, char **argv)
     }
 #if HAVE_LIBPTHREAD == 1
     pthread_mutex_destroy(&fftw_mutex);
-#endif
+#else
     int mc = get_malloc_count();
     if (mc > 0)
 	fprintf(stderr,"WARNING: %d malloc'd items not free'd\n", mc);
+#endif
 
     return 0;
 }
