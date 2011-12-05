@@ -9,6 +9,8 @@
 #include <unistd.h>
 #include <math.h>
 #include <complex.h>
+#include <errno.h>
+#include <limits.h>
 #include "util.h"
 #include "icsilog.h"
 #include <fftw3.h>
@@ -90,6 +92,9 @@ int shortterm_do_ddelta = 1;
 int longterm_do_static = 1;
 int longterm_do_dynamic = 1;
 int num_cepstral_coeffs = -1;
+
+float* Pn_buf = NULL;
+int Pn_buf_valid = 0;
 
 // FFTW plans "outsourced"
 fftw_plan dct_plan = NULL;
@@ -452,6 +457,64 @@ void cleanup_fftw_plans()
     cleanup_fdlpenv_plans();
 }
 
+void usage();
+
+int str_to_int(char *str, char* argname)
+{
+    char *endptr;
+    int val = -1;
+    int base = 10;
+
+    errno = 0;
+    val = strtol(str, &endptr, base);
+    if ((errno == ERANGE && (val == LONG_MAX || val == LONG_MIN))
+	    || (errno != 0 && val == 0)) {
+	fprintf(stderr, "Error when parsing option %s: ", argname);
+	perror("strtol");
+	usage();
+    }
+
+    if (endptr == str) {
+	fprintf(stderr, "No digits were found when parsing option %s\n", argname);
+	usage();
+    }
+
+    if (*endptr != '\0')
+    {
+	fprintf(stderr, "Excess characters after integer argument of option %s: %s\n", argname, endptr);
+	usage();
+    }
+
+    return val;
+}
+
+float str_to_float(char *str, char *argname)
+{
+    char *endptr;
+    float val = 0.;
+
+    errno = 0;
+    val = strtof(str, &endptr);
+    if (errno != 0) {
+	fprintf(stderr, "Error when parsing option %s: ", argname);
+	perror("strtof");
+	usage();
+    }
+
+    if (endptr == str) {
+	fprintf(stderr, "No digits were found when parsing option %s\n", argname);
+	usage();
+    }
+
+    if (*endptr != '\0')
+    {
+	fprintf(stderr, "Excess characters after float argument of option %s: %s\n", argname, endptr);
+	usage();
+    }
+
+    return val;
+}
+
 void usage()
 {
     fatal("\nFDLP Feature Extraction software\n"
@@ -525,7 +588,7 @@ void parse_args(int argc, char **argv)
 	{
 	    usage();
 	}
-	if ( strcmp(argv[i], "-v") == 0
+	else if ( strcmp(argv[i], "-v") == 0
 		|| strcmp(argv[i], "--verbose") == 0
 		|| strcmp(argv[i], "-verbose") == 0)
 	{
@@ -533,176 +596,376 @@ void parse_args(int argc, char **argv)
 	}
 	else if ( strcmp(argv[i], "-i") == 0 )
 	{
-	    infile = argv[++i];
+	    if (i < argc - 1 && argv[i+1][0] != '-')
+	    {
+		infile = argv[++i];
+	    }
+	    else
+	    {
+		fprintf(stderr, "No input file given!\n");
+		usage();
+	    }
 	}
 	else if ( strcmp(argv[i], "-o") == 0 )
 	{
-	    outfile = argv[++i];
+	    if (i < argc - 1 && argv[i+1][0] != '-')
+	    {
+		outfile = argv[++i];
+	    }
+	    else
+	    {
+		fprintf(stderr, "No output file given!\n");
+		usage();
+	    }
 	}
 	else if ( strcmp(argv[i], "-print") == 0 )
 	{
-	    printfile = argv[++i];
+	    if (i < argc - 1 && argv[i+1][0] != '-')
+	    {
+		printfile = argv[++i];
+	    }
+	    else
+	    {
+		fprintf(stderr, "No print output file given!\n");
+		usage();
+	    }
 	}
 	else if ( strcmp(argv[i], "-so") == 0 )
 	{
-	    specfile = argv[++i];
+	    if (i < argc - 1 && argv[i+1][0] != '-')
+	    {
+		specfile = argv[++i];
+	    }
+	    else
+	    {
+		fprintf(stderr, "No spectrogram output file given!\n");
+		usage();
+	    }
 	}
 	else if ( strcmp(argv[i], "-sr") == 0 )
 	{
-	    Fs = atoi(argv[++i]);
-	    if (Fs != 8000 && Fs != 16000) {
-		fatal("Unsupported sample rate! Only 8000 and 16000 are supported.");
+	    if (i < argc - 1)
+	    {
+		Fs = str_to_int(argv[++i], "-sr");
+		if (Fs != 8000 && Fs != 16000) {
+		    fatal("Unsupported sample rate! Only 8000 and 16000 are supported.");
+		}
+	    }
+	    else
+	    {
+		fprintf(stderr, "No sample rate given!\n");
+		usage();
 	    }
 	}
 	else if ( strcmp(argv[i], "-gn") == 0 )
 	{
-	    do_gain_norm = atoi(argv[++i]);
+	    if (i < argc - 1)
+	    {
+		do_gain_norm = str_to_int(argv[++i], "-gn");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No gain normalization flag given!\n");
+		usage();
+	    }
 	}
 	else if ( strcmp(argv[i], "-spec") == 0 
 		|| strcmp(argv[i], "-feat") == 0
 		)
 	{
-	    do_spec = atoi(argv[++i]);
-	    if (do_spec != 0 && do_spec != 1)
+	    if (i < argc - 1)
 	    {
-		fprintf(stderr, "Error: -feat: Unsupported feature type!\n");
+		do_spec = str_to_int(argv[++i], "-feat");
+		if (do_spec != 0 && do_spec != 1)
+		{
+		    fprintf(stderr, "Error: -feat: Unsupported feature type!\n");
+		    usage();
+		}
+	    }
+	    else
+	    {
+		fprintf(stderr, "No feature type given!\n");
 		usage();
 	    }
 	}
 	else if ( strcmp(argv[i], "-axis") == 0 )
 	{
-	    i++;
-	    if(strcmp(argv[i], "bark") == 0)
+	    if (i < argc - 1)
 	    {
-		axis = AXIS_BARK;
-	    }
-	    else if (strcmp(argv[i], "mel") == 0)
-	    {
-		axis = AXIS_MEL;
-	    }
-	    else if (strcmp(argv[i], "linear-mel") == 0)
-	    {
-		axis = AXIS_LINEAR_MEL;
-	    }
-	    else if (strcmp(argv[i], "linear-bark") == 0)
-	    {
-		axis = AXIS_LINEAR_BARK;
+		i++;
+		if(strcmp(argv[i], "bark") == 0)
+		{
+		    axis = AXIS_BARK;
+		}
+		else if (strcmp(argv[i], "mel") == 0)
+		{
+		    axis = AXIS_MEL;
+		}
+		else if (strcmp(argv[i], "linear-mel") == 0)
+		{
+		    axis = AXIS_LINEAR_MEL;
+		}
+		else if (strcmp(argv[i], "linear-bark") == 0)
+		{
+		    axis = AXIS_LINEAR_BARK;
+		}
+		else
+		{
+		    fprintf(stderr, "unknown frequency axis scale: %s\n", argv[i]);
+		    usage();
+		}
 	    }
 	    else
 	    {
-		fprintf(stderr, "unknown frequency axis scale: %s\n", argv[i]);
+		fprintf(stderr, "No axis given!\n");
 		usage();
 	    }
 	}
 	else if ( strcmp(argv[i], "-specgram") == 0 )
 	{
-	    specgrm = atoi(argv[++i]);
+	    if (i < argc - 1)
+	    {
+		specgrm = str_to_int(argv[++i], "-specgram");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No spectrogram flag given!\n");
+		usage();
+	    }
 	}
 	else if ( strcmp(argv[i], "-limit-range") == 0 )
 	{
-	    limit_range = atoi(argv[++i]);
+	    if (i < argc - 1)
+	    {
+		limit_range = str_to_int(argv[++i], "-limit-range");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No limit range flag given!\n");
+		usage();
+	    }
 	}
 	else if ( strcmp(argv[i], "-apply-wiener") == 0 )
 	{
-	    do_wiener = atoi(argv[++i]);
+	    if (i < argc - 1)
+	    {
+		do_wiener = str_to_int(argv[++i], "-apply-wiener");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No apply-wiener flag given!\n");
+		usage();
+	    }
 	}
 	else if ( strcmp(argv[i], "-wiener-alpha") == 0 )
 	{
-	    wiener_alpha = (float)atof(argv[++i]);
-	    wiener_alpha_given = 1;
+	    if (i < argc - 1)
+	    {
+		wiener_alpha = str_to_float(argv[++i], "-wiener-alpha");
+		wiener_alpha_given = 1;
+	    }
+	    else
+	    {
+		fprintf(stderr, "No wiener-alpha given!\n");
+		usage();
+	    }
 	}
 	else if ( strcmp(argv[i], "-fdplpwin") == 0)
 	{
-	    fdplp_win_len_sec = atof(argv[++i]);
+	    if (i < argc - 1)
+	    {
+		fdplp_win_len_sec = str_to_float(argv[++i], "-fdplpwin");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No fdplp window length given!\n");
+		usage();
+	    }
 	}
 	else if ( strcmp(argv[i], "-truncate-last") == 0)
 	{
-	    truncate_last = atoi(argv[++i]);
+	    if (i < argc - 1)
+	    {
+		truncate_last = str_to_int(argv[++i], "-truncate-last");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No truncate-last flag given!\n");
+		usage();
+	    }
 	}
 	else if ( strcmp(argv[i], "-skip-bands") == 0)
 	{
-	    skip_bands = atoi(argv[++i]);
+	    if (i < argc - 1)
+	    {
+		skip_bands = str_to_int(argv[++i], "-skip-bands");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No skip-bands flag given!\n");
+		usage();
+	    }
 	}
 	else if ( strcmp(argv[i], "-vadfile") == 0)
 	{
-	    vadfile = argv[++i];
+	    if (i < argc - 1 && argv[i+1][0] != '-')
+	    {
+		vadfile = argv[++i];
+	    }
+	    else
+	    {
+		fprintf(stderr, "No vad file given!\n");
+		usage();
+	    }
 	}
 	else if ( strcmp(argv[i], "-speechchar") == 0)
 	{
-	    speechchar = argv[++i][0];
+	    if (i < argc - 1)
+	    {
+		speechchar = argv[++i][0];
+	    }
+	    else
+	    {
+		fprintf(stderr, "No speech char given!\n");
+		usage();
+	    }
 	}
 	else if ( strcmp(argv[i], "-nonspeechchar") == 0)
 	{
-	    nspeechchar = argv[++i][0];
+	    if (i < argc - 1)
+	    {
+		nspeechchar = argv[++i][0];
+	    }
+	    else
+	    {
+		fprintf(stderr, "No nonspeech char given!\n");
+		usage();
+	    }
 	}
 	else if ( strcmp(argv[i], "-vad-grace") == 0)
 	{
-	    vad_grace = atoi(argv[++i]);
+	    if (i < argc - 1)
+	    {
+		vad_grace = str_to_int(argv[++i], "-vad-grace");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No vad grace given!\n");
+		usage();
+	    }
 	}
 	else if ( strcmp(argv[i], "-nceps") == 0)
 	{
-	    num_cepstral_coeffs = atoi(argv[++i]);
+	    if (i < argc - 1)
+	    {
+		num_cepstral_coeffs = str_to_int(argv[++i], "-nceps");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No nceps given!\n");
+		usage();
+	    }
 	}
 	else if ( strcmp(argv[i], "-shortterm-mode") == 0)
 	{
-	    int shortterm_mode = atoi(argv[++i]);
-	    switch (shortterm_mode)
+	    if (i < argc - 1)
 	    {
-		case 0:
-		    shortterm_do_delta = 0;
-		    shortterm_do_ddelta = 0;
-		    break;
-		case 1:
-		    shortterm_do_delta = 1;
-		    shortterm_do_ddelta = 0;
-		    break;
-		case 2:
-		    shortterm_do_delta = 0;
-		    shortterm_do_ddelta = 1;
-		    break;
-		case 3:
-		    shortterm_do_delta = 1;
-		    shortterm_do_ddelta = 1;
-		    break;
-		default:
-		    fprintf(stderr, "Unsupported shortterm-mode parameter!\n");
-		    usage();
+		int shortterm_mode = str_to_int(argv[++i], "-shortterm-mode");
+		switch (shortterm_mode)
+		{
+		    case 0:
+			shortterm_do_delta = 0;
+			shortterm_do_ddelta = 0;
+			break;
+		    case 1:
+			shortterm_do_delta = 1;
+			shortterm_do_ddelta = 0;
+			break;
+		    case 2:
+			shortterm_do_delta = 0;
+			shortterm_do_ddelta = 1;
+			break;
+		    case 3:
+			shortterm_do_delta = 1;
+			shortterm_do_ddelta = 1;
+			break;
+		    default:
+			fprintf(stderr, "Unsupported shortterm-mode parameter!\n");
+			usage();
+		}
+	    }
+	    else
+	    {
+		fprintf(stderr, "No shortterm mode given!\n");
+		usage();
 	    }
 	}
 	else if ( strcmp(argv[i], "-modulation-mode") == 0)
 	{
-	    int modmode = atoi(argv[++i]);
-	    switch (modmode)
+	    if (i < argc - 1)
 	    {
-		case 0:
-		    longterm_do_static = 1;
-		    longterm_do_dynamic = 0;
-		    break;
-		case 1:
-		    longterm_do_static = 0;
-		    longterm_do_dynamic = 1;
-		    break;
-		case 2:
-		    longterm_do_static = 1;
-		    longterm_do_dynamic = 1;
-		    break;
-		default:
-		    fprintf(stderr, "Error: Unsupported modulation-mode parameter!\n");
-		    usage();
+		int modmode = str_to_int(argv[++i], "-modulation-mode");
+		switch (modmode)
+		{
+		    case 0:
+			longterm_do_static = 1;
+			longterm_do_dynamic = 0;
+			break;
+		    case 1:
+			longterm_do_static = 0;
+			longterm_do_dynamic = 1;
+			break;
+		    case 2:
+			longterm_do_static = 1;
+			longterm_do_dynamic = 1;
+			break;
+		    default:
+			fprintf(stderr, "Error: Unsupported modulation-mode parameter!\n");
+			usage();
+		}
+	    }
+	    else
+	    {
+		fprintf(stderr, "No modulation mode given!\n");
+		usage();
 	    }
 	}
 	else if ( strcmp(argv[i], "-downsampling-factor") == 0 )
 	{
-	    factor = atoi(argv[++i]);
+	    if (i < argc - 1)
+	    {
+		factor = str_to_int(argv[++i], "-downsampling-factor");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No downsampling factor given!\n");
+		usage();
+	    }
 	}
 	else if ( strcmp(argv[i], "-downsampling-sr") == 0 )
 	{
-	    Fs1 = atoi(argv[++i]);
+	    if (i < argc - 1)
+	    {
+		Fs1 = str_to_int(argv[++i], "-downsampling-sr");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No downsampling sample rate given!\n");
+		usage();
+	    }
 	}
 #if HAVE_LIBPTHREAD == 1
 	else if ( strcmp(argv[i], "-max-threads") == 0 )
 	{
-	    max_num_threads = atoi(argv[++i]);
+	    if (i < argc - 1)
+	    {
+		max_num_threads = str_to_int(argv[++i], "-max-threads");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No maximum number of threads given!\n");
+		usage();
+	    }
 	}
 #endif
 	else
@@ -756,6 +1019,11 @@ void parse_args(int argc, char **argv)
     {
 	factor = 1;
 	Fs1 = Fs;
+    }
+
+    if (fdplp_win_len_sec <= 0.) {
+	fprintf(stderr, "FDLP window can not have a negative length!\n");
+	usage();
     }
 }
 
@@ -1323,17 +1591,43 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 
     float *X = (float *)MALLOC(envframes * wlen * sizeof(float));
     float *Pn = (float *)MALLOC(wlen * sizeof(float));
-    for (int i = 0; i < wlen; i++) {
-	Pn[i] = 0;
+    pthread_mutex_lock(&fftw_mutex);
+    if (Pn_buf == NULL)
+    {
+	Pn_buf = (float*) MALLOC(nbands * wlen * sizeof(float));
+	Pn_buf_valid = 0;
     }
-    for (int i = 0; i < Nindices; i++) {
-	int frameindex = vadindices[i];
-	for (int j = 0; j < wlen; j++) {
-	    Pn[j] += fftframes[frameindex * wlen + j];
+    pthread_mutex_unlock(&fftw_mutex);
+    for (int i = 0; i < wlen; i++) {
+	if (Nindices == 0)
+	{
+	    if (Pn_buf_valid == 1)
+	    {
+		Pn[i] = Pn_buf[myband * wlen + i];
+	    }
+	    else
+	    {
+		Pn[i] = 1.; // neutral for the division lateron
+	    }
+	}
+	else
+	{
+	    Pn[i] = 0;
 	}
     }
-    for (int i = 0; i < wlen; i++) {
-	Pn[i] /= Nindices;
+    if (Nindices > 0)
+    {
+	for (int i = 0; i < Nindices; i++) {
+	    int frameindex = vadindices[i];
+	    for (int j = 0; j < wlen; j++) {
+		Pn[j] += fftframes[frameindex * wlen + j];
+	    }
+	}
+	for (int i = 0; i < wlen; i++) {
+	    Pn[i] /= Nindices;
+	    Pn_buf[myband * wlen + i] = Pn[i];
+	}
+	Pn_buf_valid = 1;
     }
 
     for (int f = 0; f < envframes; f++)
@@ -1489,7 +1783,6 @@ int *read_VAD(int N, int Fs, int* Nindices)
     int *indices = MALLOC(sizeof(int) * fnum);
     *Nindices = 0;
 
-    fprintf(stderr, "Reading %d vad frames starting from %d (num_vad_labels=%d)\n", fnum, vad_label_start, num_vad_labels);
     if (vad_label_start + fnum > num_vad_labels) {
 	fatal("Not enough VAD labels left?!");
     }
@@ -2102,8 +2395,8 @@ void spec2cep(float * frames, int fdlpwin, int nframes, int ncep, int nbands, in
 		}
 		else
 		{
-		    //feat[i] += icsi_log(frame[j],LOOKUP_TABLE,nbits_log)*dctm[i*fdlpwin+j];
-		    feat[i] += log(frame[j])*dctm[i*fdlpwin+j];
+		    feat[i] += icsi_log(frame[j],LOOKUP_TABLE,nbits_log)*dctm[i*fdlpwin+j];
+		    //feat[i] += log(frame[j])*dctm[i*fdlpwin+j];
 		}
 	    }
 	}
@@ -2436,8 +2729,8 @@ void* fdlpenv_pthread_wrapper(void* arg)
 
 	for (int k =0;k<send1;k++)
 	{
-	    //env_log[k] = icsi_log(env[k],LOOKUP_TABLE,nbits_log);     
-	    env_log[k] = log(env[k]);     
+	    env_log[k] = icsi_log(env[k],LOOKUP_TABLE,nbits_log);     
+	    //env_log[k] = log(env[k]);
 	    sleep(0);	// Found out that icsi log is too fast and gives errors 
 	}
 
