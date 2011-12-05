@@ -16,6 +16,7 @@
 
 #if HAVE_LIBPTHREAD == 1
 #include <pthread.h>
+#include <time.h>
 #endif
 
 # define pi 3.14159265
@@ -49,6 +50,7 @@ char *infile = NULL;
 char *outfile = NULL;
 char *printfile = NULL;
 char *specfile = NULL;
+int verbose = 0;
 int Fs = 8000;
 int factor = -1;
 int Fs1 = -1;
@@ -67,7 +69,7 @@ int *indices = NULL;
 int *orig_indices = NULL;
 int nbands = 0;
 int auditory_win_length = 0;
-int fdplp_win_len_sec = 5;
+float fdplp_win_len_sec = 5;
 
 int limit_range = 0;
 int do_wiener = 0;
@@ -128,6 +130,8 @@ struct running_thread {
 struct thread_info* band_threads = NULL;
 #if HAVE_LIBPTHREAD == 1
 pthread_mutex_t fftw_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t tpool_mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t tpool_cond = PTHREAD_COND_INITIALIZER;
 #endif
 
 struct lpc_info {
@@ -173,12 +177,16 @@ void run_threads(struct thread_info* threads, int numthreads)
     int curr_num_threads = 0;
 #if HAVE_LIBPTHREAD == 1
     struct running_thread* running_threads = NULL;
+    struct timespec ts;
 #endif
+    //fprintf(stderr, "Got %d jobs to run with a maximum number of %d threads\n", numthreads, max_num_threads);
     while (i < numthreads)
     {
 #if HAVE_LIBPTHREAD == 1
+	//fprintf(stderr, "Scheduling job %d, %d/%d threads currently running\n", i, curr_num_threads, max_num_threads);
 	if (max_num_threads < 0 || curr_num_threads < max_num_threads)
 	{
+	    //fprintf(stderr, "starting job\n");
 	    pthread_create(&threads[i].thread_id, NULL, threads[i].threadfunc, threads[i].thread_arg);
 	    struct running_thread* new_runner = (struct running_thread*) MALLOC(sizeof(struct running_thread));
 	    new_runner->thread_id = &threads[i].thread_id;
@@ -201,6 +209,20 @@ void run_threads(struct thread_info* threads, int numthreads)
 	}
 	// clean up running thread list in case anything is already finished
 	struct running_thread* last = NULL;
+	//fprintf(stderr, "Cleaning up running jobs...\n");
+	pthread_mutex_lock(&tpool_mutex);
+	if (max_num_threads > 0 && curr_num_threads >= max_num_threads)
+	{
+	    clock_gettime(CLOCK_REALTIME, &ts);
+	    ts.tv_nsec += 5000000; // half a second
+	    if (ts.tv_nsec >= 1000000000)
+	    {
+		int nsecs = ts.tv_nsec / 1000000000;
+		ts.tv_sec += nsecs;
+		ts.tv_nsec -= nsecs * 1000000000;
+	    }
+	    pthread_cond_timedwait(&tpool_cond, &tpool_mutex, &ts);
+	}
 	for (struct running_thread* current = running_threads; current != NULL; )
 	{
 	    int errcode = pthread_tryjoin_np(*(current->thread_id), NULL);
@@ -230,10 +252,7 @@ void run_threads(struct thread_info* threads, int numthreads)
 		current = current->next;
 	    }
 	}
-	if (max_num_threads > 0 && curr_num_threads >= max_num_threads)
-	{
-	    sleep(1);
-	}
+	pthread_mutex_unlock(&tpool_mutex);
 #else
 	threads[i].threadfunc(threads[i].thread_arg);
 	i++;
@@ -273,6 +292,7 @@ void cleanup_fdlpenv_plans()
 	    if (fdlpenv_input_buffers[i] != NULL)
 	    {
 		FREE(fdlpenv_input_buffers[i]);
+		fdlpenv_input_buffers[i] = NULL;
 	    }
 	}
 	if (fdlpenv_output_buffers != NULL)
@@ -280,6 +300,7 @@ void cleanup_fdlpenv_plans()
 	    if (fdlpenv_output_buffers[i] != NULL)
 	    {
 		FREE(fdlpenv_output_buffers[i]);
+		fdlpenv_output_buffers[i] = NULL;
 	    }
 	}
     }
@@ -327,6 +348,7 @@ void cleanup_lpc_plans()
 	    if (lpc_r2c_input_buffers[i] != NULL)
 	    {
 		FREE(lpc_r2c_input_buffers[i]);
+		lpc_r2c_input_buffers[i] = NULL;
 	    }
 	}
 	if (lpc_r2c_output_buffers != NULL)
@@ -334,6 +356,7 @@ void cleanup_lpc_plans()
 	    if (lpc_r2c_output_buffers[i] != NULL)
 	    {
 		FREE(lpc_r2c_output_buffers[i]);
+		lpc_r2c_output_buffers[i] = NULL;
 	    }
 	}
 	if (lpc_c2r_plans != NULL)
@@ -354,6 +377,7 @@ void cleanup_lpc_plans()
 	    if (lpc_c2r_input_buffers[i] != NULL)
 	    {
 		FREE(lpc_c2r_input_buffers[i]);
+		lpc_c2r_input_buffers[i] = NULL;
 	    }
 	}
 	if (lpc_c2r_output_buffers != NULL)
@@ -361,6 +385,7 @@ void cleanup_lpc_plans()
 	    if (lpc_c2r_output_buffers[i] != NULL)
 	    {
 		FREE(lpc_c2r_output_buffers[i]);
+		lpc_c2r_output_buffers[i] = NULL;
 	    }
 	}
     }
@@ -421,6 +446,7 @@ void cleanup_fftw_plans()
     if (dct_buffer != NULL)
     {
 	FREE(dct_buffer);
+	dct_buffer = NULL;
     }
     cleanup_lpc_plans();
     cleanup_fdlpenv_plans();
@@ -434,6 +460,7 @@ void usage()
 
 	    "\nOPTIONS\n\n"
 	    " -h, --help\t\tPrint this help and exit\n"
+	    " -v, --verbose\t\tPrint out the computation time for every fdlp window\n"
 	    "\nIO options:\n\n"
 	    " -i <str>\t\tInput file name. Only signed 16-bit little endian raw files are supported. REQUIRED\n"
 	    " -o <str>\t\tOutput file name for raw binary float output. Either this or -print is REQUIRED\n"
@@ -443,7 +470,7 @@ void usage()
 	    " -sr <str>\t\tInput samplerate in Hertz. Only 8000 and 16000 Hz are supported. (8000)\n"
 
 	    "\nWindowing options:\n\n"
-	    " -fdplpwin <sec>\tLength of FDPLP window in sec (better for reverberant environments when gain normalization is used: 10) (5)\n"
+	    " -fdplpwin <sec>\tLength of FDPLP window in sec as a float (better for reverberant environments when gain normalization is used: 10) (5)\n"
 	    " -truncate-last <flag>\ttruncate last frame if number of samples does not fill the entire fdplp window (speeds up computation but also changes numbers) (0)\n"
 
 	    "\nFeature generation options:\n\n"
@@ -497,6 +524,12 @@ void parse_args(int argc, char **argv)
 		|| strcmp(argv[i], "-help") == 0)
 	{
 	    usage();
+	}
+	if ( strcmp(argv[i], "-v") == 0
+		|| strcmp(argv[i], "--verbose") == 0
+		|| strcmp(argv[i], "-verbose") == 0)
+	{
+	    verbose = 1;
 	}
 	else if ( strcmp(argv[i], "-i") == 0 )
 	{
@@ -580,7 +613,7 @@ void parse_args(int argc, char **argv)
 	}
 	else if ( strcmp(argv[i], "-fdplpwin") == 0)
 	{
-	    fdplp_win_len_sec = atoi(argv[++i]);
+	    fdplp_win_len_sec = atof(argv[++i]);
 	}
 	else if ( strcmp(argv[i], "-truncate-last") == 0)
 	{
@@ -1443,6 +1476,7 @@ void* lpc_pthread_wrapper(void* arg)
     {
 	lpc(info->y, info->len, info->order, info->compression, info->poles, info->band);
     }
+    pthread_cond_signal(&tpool_cond);
     return NULL;
 }
 
@@ -1455,6 +1489,7 @@ int *read_VAD(int N, int Fs, int* Nindices)
     int *indices = MALLOC(sizeof(int) * fnum);
     *Nindices = 0;
 
+    fprintf(stderr, "Reading %d vad frames starting from %d (num_vad_labels=%d)\n", fnum, vad_label_start, num_vad_labels);
     if (vad_label_start + fnum > num_vad_labels) {
 	fatal("Not enough VAD labels left?!");
     }
@@ -1677,7 +1712,7 @@ float * fdlpfit_full_sig(float *x, int N, int Fs, int *Np)
     }
 
     if (numbands != bank_nbands + skip_bands || fdlpwin != auditory_win_length) {
-	fprintf(stderr, "(Re)creating auditory filter bank (nbands or fdlpwin changed)\n");
+	if  (verbose) fprintf(stderr, "(Re)creating auditory filter bank (nbands or fdlpwin changed)\n");
 	if (orig_wts != NULL) {
 	    FREE(orig_wts);
 	    wts = NULL;
@@ -1778,7 +1813,7 @@ float * fdlpfit_full_sig(float *x, int N, int Fs, int *Np)
 	band_threads = (struct thread_info*) MALLOC(nbands * sizeof(struct thread_info));
     }
     
-    fprintf(stderr, "Number of sub-bands = %d\n", nbands);	
+    if (verbose) fprintf(stderr, "Number of sub-bands = %d\n", nbands);	
     switch (axis)
     {
 	case AXIS_MEL:
@@ -2489,6 +2524,9 @@ void* fdlpenv_pthread_wrapper(void* arg)
 	FREE(env_adpt);
     }
     *(info->nframes) = nframes;
+#if HAVE_LIBPTHREAD == 1
+    pthread_cond_signal(&tpool_cond);
+#endif
     return NULL;
 }
 
@@ -2598,7 +2636,7 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 	}
 	if (specgrm)
 	{
-	    fprintf(stderr,"specgram flag =%d\n",specgrm);
+	    //if (verbose) fprintf(stderr,"specgram flag =%d\n",specgrm);
 	}
 	else
 	{
@@ -2628,6 +2666,8 @@ int main(int argc, char **argv)
 
 #if HAVE_LIBPTHREAD == 1
     pthread_mutex_init(&fftw_mutex, NULL);
+    pthread_mutex_init(&tpool_mutex, NULL);
+    pthread_cond_init(&tpool_cond, NULL);
 #endif
 
     LOOKUP_TABLE = (float*) MALLOC(((int) pow(2,nbits_log))*sizeof(float));
@@ -2642,7 +2682,8 @@ int main(int argc, char **argv)
     fprintf(stderr, "Limit DCT range: %d\n", limit_range);
     fprintf(stderr, "Apply wiener filter: %d (alpha=%g)\n", do_wiener, wiener_alpha);
 
-    fprintf(stderr, "Feature type: %s\n", (do_spec ? "spectral" : "modulation"));
+    fprintf(stderr, "Feature type: %s\n", (do_spec ? (specgrm ? "spectrogram" : "spectral") : "modulation"));
+    fprintf(stderr, "FDPLP window length: %gs\n", fdplp_win_len_sec);
 
     int fwin = DEFAULT_SHORTTERM_WINLEN_MS * Fs;
     int fstep = DEFAULT_SHORTTERM_WINSHIFT_MS * Fs; 
@@ -2653,7 +2694,7 @@ int main(int argc, char **argv)
 
     Nsignal = N;
 
-    int fdlpwin = fdplp_win_len_sec * FDLPWIN_SEC2SHORTTERMMULT_FACTOR * fwin;
+    int fdlpwin = (int)(fdplp_win_len_sec * FDLPWIN_SEC2SHORTTERMMULT_FACTOR * fwin);
     int fdlpolap = DEFAULT_FDLPWIN_SHIFT_MS * Fs;  
     int nframes;
     //int add_samp;
@@ -2739,7 +2780,7 @@ int main(int argc, char **argv)
 	if (f < nframes - 1 && Nsignal - (f + 1) * (fdlpwin - fdlpolap) < 0.2 * Fs)
 	{
 	    // have at least .2 seconds in the last frame or just enlarge the second-to-last frame
-	    local_size = Nsignal + fdlpolap - f * (fdlpwin - fdlpolap);
+	    local_size = Nsignal - f * (fdlpwin - fdlpolap);
 	    if (local_size > Nsignal)
 	    {
 		local_size = Nsignal;
@@ -2762,11 +2803,10 @@ int main(int argc, char **argv)
 	    float *specgram_mem = spectrogram + (specfile == NULL ? 0 : nfeatfr_calculated * nbands);
 	    compute_fdlp_feats( xwin, local_size, Fs, &nceps, &feat_mem, nfeatfr, nframes, &dim, &specgram_mem );
 	}
-	printf("\n"); 
 	nfeatfr_calculated += nfeatfr;
 	vad_label_start = nfeatfr_calculated;
 
-	fprintf(stderr, "%f s\n",toc());
+	if (verbose || f == nframes - 1 || stop_before) fprintf(stderr, "%f s\n",toc());
     }
 
     if (outfile)
@@ -2808,6 +2848,8 @@ int main(int argc, char **argv)
     }
 #if HAVE_LIBPTHREAD == 1
     pthread_mutex_destroy(&fftw_mutex);
+    pthread_mutex_destroy(&tpool_mutex);
+    pthread_cond_destroy(&tpool_cond);
 #else
     int mc = get_malloc_count();
     if (mc > 0)

@@ -18,6 +18,9 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=c99 -O4 -Wall")
 find_library(LibM m)
 set(libs ${libs} ${LibM})
 
+find_library(LibRT rt)
+set(libs ${libs} ${LibRT})
+
 find_library(LibPthread pthread)
 if (NOT ${LibPthread} STREQUAL "LibPthread-NOTFOUND")
     set(libs ${libs} ${LibPthread})

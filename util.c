@@ -47,7 +47,8 @@ int lenchars_file(char *fn)
 {
   FILE *fd = fopen(fn, "r");
   if (fd == NULL) {
-    perror("Unable to open input file");
+    fprintf(stderr, "Unable to open file <%s>: ", fn);
+    perror("");
     exit(1);
   }
   if(fseek(fd, 0, SEEK_END) == EOF) fatal("seek failed");
@@ -60,7 +61,8 @@ char *readchars_file(char *fn, long offset, int *nread)
 {
    FILE *fd = fopen(fn, "r");
    if (fd == NULL) {
-       perror("Unable to open input file");
+       fprintf(stderr, "Unable to open file <%s>: ", fn);
+       perror("");
        exit(1);
    }
    if(fseek(fd, offset, SEEK_SET) == EOF) fatal("seek failed");
