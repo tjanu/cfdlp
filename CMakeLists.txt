@@ -44,3 +44,7 @@ endif()
 add_executable(cfdlp ${srcs})
 target_link_libraries(cfdlp ${libs})
 add_dependencies(cfdlp libfftw)
+
+install(TARGETS cfdlp
+    RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX}/bin
+)
