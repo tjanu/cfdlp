@@ -462,7 +462,7 @@ void usage();
 int str_to_int(char *str, char* argname)
 {
     char *endptr;
-    int val = -1;
+    long val = -1;
     int base = 10;
 
     errno = 0;
@@ -485,7 +485,7 @@ int str_to_int(char *str, char* argname)
 	usage();
     }
 
-    return val;
+    return (int)val;
 }
 
 float str_to_float(char *str, char *argname)
