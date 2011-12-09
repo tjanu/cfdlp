@@ -3090,8 +3090,10 @@ int main(int argc, char **argv)
 	    if (i < num_read_labels) {
 		vad_labels[i] = (labels[i] == speechchar ? 1 : (labels[i] == nspeechchar ? 0 : 2));
 		if (vad_labels[i] == 2) {
-		    fprintf(stderr, "wrong char: <%c>\n", labels[i]);
-		    fatal("VAD file had unspecified character in it!");
+		    if (i > num_read_labels - 3 && labels[i] != '\n' && labels[i] != '\r') {
+			fprintf(stderr, "wrong char: <%c>\n", labels[i]);
+			fatal("VAD file had unspecified character in it!");
+		    }
 		}
 	    } else {
 		if (i < num_read_labels + vad_grace)
