@@ -2453,8 +2453,15 @@ void spec2cep(float * frames, int fdlpwin, int nframes, int ncep, int nbands, in
 
 void spec2cep4energy(float * frames, int fdlpwin, int nframes, int ncep, float *final_feats, int log_flag)
 {
-    if ( dctm == NULL )
+    static int old_fdlpwin = 0, old_ncep = 0;
+    if ( old_fdlpwin != fdlpwin || old_ncep != ncep )
     {
+	if (dctm != NULL) {
+	    FREE(dctm);
+	}
+	old_fdlpwin = fdlpwin;
+	old_ncep = ncep;
+
 	dctm = (float *) MALLOC(fdlpwin*ncep*sizeof(float));
 
 	for ( int i = 0; i < ncep; i++ )
@@ -2489,6 +2496,10 @@ void spec2cep4energy(float * frames, int fdlpwin, int nframes, int ncep, float *
 		{
 		    //feat[i] += (0.33*icsi_log(frame[j],LOOKUP_TABLE,nbits_log))*dctm[i*fdlpwin+j]; //Cubic root compression and log
 		    feat[i] += (0.33*log(frame[j]))*dctm[i*fdlpwin+j]; //Cubic root compression and log
+		    if (isnan(feat[i])) {
+			fprintf(stderr, "nan at spec2cep4energy with f=%d, i=%d, j=%d after adding 0.33*log(frame[j]=%g)*dctm[i*fdlpwin=%d+j]=%g\n",
+				f, i, j, frame[j], fdlpwin, dctm[i*fdlpwin+j]);
+		    }
 		}
 	    }
 	}
@@ -2639,7 +2650,13 @@ void audspec(float **bands, int *nbands, int nframes)
     int nfft = (*nbands - 1) * 2;
     int nfilts = 0;
 
-    if (fft2decompm == NULL) {
+    static int old_nfft = 0;
+
+    if (old_nfft != nfft) {
+	if (fft2decompm != NULL) {
+	    FREE(fft2decompm);
+	}
+	old_nfft = nfft;
 	if (axis == AXIS_LINEAR_MEL) {
 	    fft2decompm = fft2melmx(nfft, &nfilts);
 	} else if (axis == AXIS_LINEAR_BARK) {
@@ -2658,7 +2675,15 @@ void audspec(float **bands, int *nbands, int nframes)
 	    float temp = 0.;
 	    for (int j = 0; j < *nbands; j++)
 	    {
-		temp += energybands[f * (*nbands) + j] * fft2decompm[i * nfft + j];
+		temp += sqrt(energybands[f * (*nbands) + j]) * fft2decompm[i * nfft + j];
+	    }
+	    temp *= temp;
+	    if (temp < 0) {
+		fprintf(stderr, "new spectral element is negative?! Summed up these values:\n");
+		for (int j = 0; j < *nbands; j++) {
+		    fprintf(stderr, "%g * %g | ", energybands[f*(*nbands)+j], fft2decompm[i*nfft+j]);
+		}
+		fprintf(stderr, "\n");
 	    }
 	    new_bands[f * nfilts + i] = temp;
 	}

@@ -57,8 +57,15 @@ Additions/Modifications by Thomas Janu <tjanu1@jhu.edu>
 	used to obtain the autocorrelation coefficients needed for the LPC (so, the
 	wiener filter is applied per band). The Wiener filter applied at this
 	stage estimates the clean signal from the noisy signal in additive noise
-	scenarios. This is currently only possible for 8kHz-signals.
+	scenarios.
 -apply-wiener 0 disables the VAD and the Wiener filter (default)
+-vadfile <file_name> - read in the VAD information from this file instead of
+        performing ad-hoc energy-based VAD. One char per frame, no newlines!
+-speechchar <char> - if -vadfile is given, this character represents a speech
+	frame
+-nonspeechchar <char> - if -vadfile is given, this char represents nonspeech
+-vad-grace <int> - the vadfile may have up to <vad-grace> frames more or less
+	than are actually in the file
 -fdplpwin <sec> sets the length of the fdplp window to <sec> seconds, defaults
 	to 5. In reverberant environments with long enough files, 10 is a useful
 	value.
@@ -68,6 +75,32 @@ Additions/Modifications by Thomas Janu <tjanu1@jhu.edu>
 -truncate-last 1 truncates the last frame to the number of actual signal values.
 	Seriously speeds up the computation for short files (but also changes
 	the generated feature numbers significantly)
+-skip-bands <int> specify how many bands to skip (starting at lowest frequencies), default: 0.
+	Useful for band-limited data (like telephone audio --> good value is to skip 2 bands
+	with the linear-* frequency mappings)
+-feat	new name for -spec
+-nceps <int> specifiy the number of cepstral coefficients to keep
+-shortterm-mode <int> define how to construct one feature vector for shortterm
+	features:
+	    0: only cepstral coefficients
+	    1: 0 + first order derivatives
+	    2: 0 + second order derivatives
+	    3: 0 + first and second order derivatives
+-modulation-mode <int> - define how to construct one feature vector for
+         modulation features:
+	    0: only statically compressed modulation cepstrum
+	    1: only dynamically compressed modulation cepstrum
+	    2: statically and dynamically compressed modulation cepstra
+-downsampling-factor <int> : downsample the envelopes by a factor given here.
+	    (fdlp_fast uses 20 here)
+-downsampling-sr <int> : give the target sample rate for the downsampling
+         directly. for fdlp_fast and 8kHz data, this would be 400Hz. If
+         -downsampling-sr and -downsampling-factor are given, the latter supercedes
+	 the former.
+-max-threads <int> - if pthreads is available on the system at build time, limit
+	the number of threads to use. default is 1 (single-threaded), -1 means "as many
+	threads as there are bands to calculate" (be careful when using linear
+	decomposition)
 
 ----------
 
