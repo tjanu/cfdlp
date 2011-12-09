@@ -102,6 +102,7 @@ int dct_plan_size = -1;
 double *dct_buffer = NULL;
 
 fftw_plan* lpc_r2c_plans = NULL;
+int num_lpc_plans = 0;
 int* lpc_r2c_plan_sizes = NULL;
 double** lpc_r2c_input_buffers = NULL;
 complex** lpc_r2c_output_buffers = NULL;
@@ -111,6 +112,7 @@ complex** lpc_c2r_input_buffers = NULL; // only needed in hlpc_wiener
 double** lpc_c2r_output_buffers = NULL;
 
 fftw_plan* fdlpenv_plans = NULL;
+int num_fdlpenv_plans = 0;
 int* fdlpenv_plan_sizes = NULL;
 double** fdlpenv_input_buffers = NULL;
 complex** fdlpenv_output_buffers = NULL;
@@ -277,7 +279,7 @@ void run_threads(struct thread_info* threads, int numthreads)
 
 void cleanup_fdlpenv_plans()
 {
-    for (int i = 0; i < nbands; i++)
+    for (int i = 0; i < num_fdlpenv_plans; i++)
     {
 	if (fdlpenv_plans != NULL)
 	{
@@ -329,11 +331,12 @@ void cleanup_fdlpenv_plans()
 	FREE(fdlpenv_output_buffers);
 	fdlpenv_output_buffers = NULL;
     }
+    num_fdlpenv_plans = 0;
 }
 
 void cleanup_lpc_plans()
 {
-    for (int i = 0; i < nbands; i++)
+    for (int i = 0; i < num_lpc_plans; i++)
     {
 	if (lpc_r2c_plans != NULL)
 	{
@@ -434,6 +437,7 @@ void cleanup_lpc_plans()
 	FREE(lpc_c2r_output_buffers);
 	lpc_c2r_output_buffers = NULL;
     }
+    num_lpc_plans = 0;
 }
 
 void cleanup_fftw_plans()
@@ -2122,6 +2126,7 @@ float * fdlpfit_full_sig(float *x, int N, int Fs, int *Np)
 	lpc_c2r_plan_sizes = (int*) MALLOC(nbands * sizeof(int));
 	lpc_c2r_input_buffers = (complex **) MALLOC(nbands * sizeof(complex*));
 	lpc_c2r_output_buffers = (double**) MALLOC(nbands * sizeof(double*));
+	num_lpc_plans = nbands;
 	for (int i = 0; i < nbands; i++)
 	{
 	    lpc_r2c_plans[i] = NULL;
@@ -2140,6 +2145,7 @@ float * fdlpfit_full_sig(float *x, int N, int Fs, int *Np)
 	fdlpenv_plan_sizes = (int*) MALLOC(nbands * sizeof(int));
 	fdlpenv_input_buffers = (double**) MALLOC(nbands * sizeof(double*));
 	fdlpenv_output_buffers = (complex**) MALLOC(nbands * sizeof(complex*));
+	num_fdlpenv_plans = nbands;
 	for (int i = 0; i < nbands; i++)
 	{
 	    fdlpenv_plans[i] = NULL;
@@ -3222,6 +3228,7 @@ int main(int argc, char **argv)
     if (mc > 0)
 	fprintf(stderr,"WARNING: %d malloc'd items not free'd\n", mc);
 #endif
+    fftw_forget_wisdom();
 
     return 0;
 }
