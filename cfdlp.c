@@ -1036,6 +1036,15 @@ void sdither( short *x, int N, int scale )
     }
 }
 
+void fdither_absolute( float *x, int N, int scale ) 
+{
+    for ( int i = 0; i < N; i++ )
+    {
+	float r = ((float) rand())/RAND_MAX;
+	x[i] += fabs(round(scale*2*r-1));
+    }
+}
+
 void fdither( float *x, int N, int scale ) 
 {
     for ( int i = 0; i < N; i++ )
@@ -1085,6 +1094,31 @@ short *sconstruct_frames( short **x, int *N, int width, int overlap, int *nframe
 
     return frames;
 }
+
+float *fconstruct_frames_wiener( float **x, int *N, int width, int overlap, int *nframes )
+{
+    *nframes = ceil(((float) *N-width)/(width-overlap)+1);
+    int padlen = width + (*nframes-1)*(width-overlap);
+
+    *x = (float *) realloc(*x, padlen*sizeof(float));
+    memset(*x+*N, 0, sizeof(float)*(padlen-*N));
+    fdither_absolute(*x+*N, padlen-*N, 1);
+    *N = padlen;
+
+    int step = width-overlap;
+    float *frames = MALLOC(*nframes*width*sizeof(float));
+
+    for ( int f = 0; f < *nframes; f++ )
+    {
+	for ( int n = 0; n < width; n++ )
+	{
+	    frames[f*width+n] = *(*x + f*step+n);
+	}
+    }
+
+    return frames;
+}
+
 
 float *fconstruct_frames( float **x, int *N, int width, int overlap, int *nframes )
 {
@@ -1377,17 +1411,31 @@ void levinson(int p, double *phi, float *poles)
 	    alpha[i*(p+1)+j] = alpha[(i-1)*(p+1)+j] + k[i]*alpha[(i-1)*(p+1)+i-j];
 	}
 	E[i] = (1-k[i]*k[i])*E[i-1];
+	if (E[i] < 0.) {
+	    fprintf(stderr, "E[%d]=%g, k[%d]=%g, k[i]^2=%g, E[%d-1]=%g\n",
+		    i, E[i], i, k[i], k[i]*k[i], i, E[i-1]);
+	    fatal("E[i] negative -> something must be wrong with the data.");
+	}
     }
 
     // Copy final iteration coeffs to output array
     g = sqrt(E[p]);
-
+    // nantest
     for ( int i = 0; i <= p; i++ )
     {
 	poles[i] = alpha[p*(p+1)+i];
-	if (do_gain_norm == 0)
+	if (!do_gain_norm)
 	{
-	    poles[i] /= g; 
+	    if (E[p] <= 0.) {
+		// g is nan now (negative) or 0 (if E[p] == 0.) -> complex
+		// squareroot or division by zero. all boils down to all-zero
+		// poles
+		poles[i] = 0.;
+	    }
+	    else
+	    {
+		poles[i] /= g; 
+	    }
 	}	
     }
     FREE(k);
@@ -1587,7 +1635,7 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     int envlen = orig_len;
     int envframes = 0;
     int overlap = wlen - (int)round((float)wlen * SP);
-    float *fftframes = fconstruct_frames(&ENV, &envlen, wlen, overlap, &envframes);
+    float *fftframes = fconstruct_frames_wiener(&ENV, &envlen, wlen, overlap, &envframes);
 
     float *X = (float *)MALLOC(envframes * wlen * sizeof(float));
     float *Pn = (float *)MALLOC(wlen * sizeof(float));
@@ -3011,6 +3059,7 @@ int main(int argc, char **argv)
 	    if (i < num_read_labels) {
 		vad_labels[i] = (labels[i] == speechchar ? 1 : (labels[i] == nspeechchar ? 0 : 2));
 		if (vad_labels[i] == 2) {
+		    fprintf(stderr, "wrong char: <%c>\n", labels[i]);
 		    fatal("VAD file had unspecified character in it!");
 		}
 	    } else {
@@ -3081,7 +3130,7 @@ int main(int argc, char **argv)
 	    stop_before = 1;
 	    xwin = signal + (Nsignal - local_size);
 	}
-	fdither( xwin, local_size, 1 );
+	//fdither( xwin, local_size, 1 ); // TODO commented out
 	sub_mean( xwin, local_size );
 
 	int nfeatfr = (int)floor((local_size - fwin)/fstep)+1;
