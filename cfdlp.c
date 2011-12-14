@@ -72,6 +72,7 @@ int *orig_indices = NULL;
 int nbands = 0;
 int auditory_win_length = 0;
 float fdplp_win_len_sec = 5;
+float model_order_factor = -1;
 
 int limit_range = 0;
 int do_wiener = 0;
@@ -544,6 +545,7 @@ void usage()
 	    " -gn <flag>\t\tGain Normalization (1) \n"
 	    " -limit-range <flag>\tLimit DCT-spectrum to 125-3800Hz before FDPLP processing (0)\n"
 	    " -axis <str>\t\tbark,mel,linear-mel,linear-bark (bark)\n"
+	    " -pole-factor <float>\tThe model order calculated as a length in samples divided by an axis-dependend factor that can be given here (bark:fdplpwin/200, mel:fdplpwin/100, linear-*:filter-len/6)\n"
 	    " -skip-bands <int n>\tWhether or not to skip the first n bands when computing the features (useful value for telephone data: 2) (0)\n"
 	    " -feat <flag>\t\tFeature type to generate. (0)\n"
 	    "\t\t\t\t0: Long-term modulation features\n"
@@ -722,6 +724,18 @@ void parse_args(int argc, char **argv)
 	    else
 	    {
 		fprintf(stderr, "No axis given!\n");
+		usage();
+	    }
+	}
+	else if ( strcmp(argv[i], "-pole-factor") == 0)
+	{
+	    if (i < argc - 1)
+	    {
+		model_order_factor = str_to_float(argv[++i], "-pole-factor");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No pole-factor argument given!\n");
 		usage();
 	    }
 	}
@@ -1028,6 +1042,23 @@ void parse_args(int argc, char **argv)
     if (fdplp_win_len_sec <= 0.) {
 	fprintf(stderr, "FDLP window can not have a negative length!\n");
 	usage();
+    }
+
+    if (model_order_factor <= 0.)
+    {
+	switch (axis)
+	{
+	    case AXIS_MEL:
+		model_order_factor = 100.;
+		break;
+	    case AXIS_BARK:
+		model_order_factor = 200.;
+		break;
+	    case AXIS_LINEAR_MEL:
+	    case AXIS_LINEAR_BARK:
+		model_order_factor = 6.;
+		break;
+	}
     }
 }
 
@@ -2164,15 +2195,27 @@ float * fdlpfit_full_sig(float *x, int N, int Fs, int *Np)
     switch (axis)
     {
 	case AXIS_MEL:
-	    *Np = round((float)fdlpwin/100.);
-	    break;
 	case AXIS_BARK:
-	    *Np = round((float)fdlpwin/200.);
+	    *Np = round((float)fdlpwin/model_order_factor);
 	    break;
 	case AXIS_LINEAR_MEL:
 	case AXIS_LINEAR_BARK:
-	    *Np = round((float)(indices[1] - indices[0]) / 6.);
+	    *Np = round((float)(indices[1] - indices[0]) / model_order_factor);
 	    break;
+    }
+
+    if (*Np < 1.)
+    {
+	switch (axis)
+	{
+	    case AXIS_LINEAR_MEL:
+	    case AXIS_LINEAR_BARK:
+		fprintf(stderr, "Do not have enough input samples to work with a pole-factor of %g. (Sample length divided by it: %d)\n", model_order_factor, indices[1] - indices[0]);
+		break;
+	    default:
+		fprintf(stderr, "Do not have enough input samples to work with a pole-factor of %g. (Sample length divided by it: %d)\n", model_order_factor, fdlpwin);
+	}
+	exit(1);
     }
 
     float *p = (float *) MALLOC( (*Np+1)*nbands*sizeof(float) );
@@ -2299,7 +2342,7 @@ float * fdlpenv( float *p, int Np, int N, int myband )
     for ( int n = 0; n < N; n++ )
     {
 	fdlpenv_output_buffers[myband][n] = 1.0/fdlpenv_output_buffers[myband][n];
-	env[n] = 2*fdlpenv_output_buffers[myband][n]*conj(fdlpenv_output_buffers[myband][n]);
+	env[n] = (float)2*fdlpenv_output_buffers[myband][n]*conj(fdlpenv_output_buffers[myband][n]);
     }
 
     return env;
@@ -3163,7 +3206,8 @@ int main(int argc, char **argv)
 	    stop_before = 1;
 	    xwin = signal + (Nsignal - local_size);
 	}
-	//fdither( xwin, local_size, 1 ); // TODO commented out
+
+	fdither( xwin, local_size, 1 );
 	sub_mean( xwin, local_size );
 
 	int nfeatfr = (int)floor((local_size - fwin)/fstep)+1;
