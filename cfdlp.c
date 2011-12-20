@@ -140,6 +140,7 @@ struct thread_info* band_threads = NULL;
 pthread_mutex_t fftw_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t tpool_mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t tpool_cond = PTHREAD_COND_INITIALIZER;
+pthread_mutex_t adapt_mutex = PTHREAD_MUTEX_INITIALIZER;
 #endif
 
 struct lpc_info {
@@ -1089,7 +1090,7 @@ void fdither( float *x, int N, int scale )
     }
 }
 
-void sub_mean( float *x, int N ) 
+void sub_mean( short *x, int N ) 
 {
     float sum = 0.;
     for ( int i = 0; i < N; i++ )
@@ -1524,18 +1525,6 @@ void lpc( double *y, int len, int order, int compr, float *poles, int myband )
 	lpc_r2c_input_buffers[myband] = (double*) MALLOC(lpc_r2c_plan_sizes[myband] * sizeof(double));
     }
 
-    for ( int n = 0; n < N; n++ )
-    {
-	if ( n < len )
-	{
-	    lpc_r2c_input_buffers[myband][n] = y[n];
-	}
-	else
-	{
-	    lpc_r2c_input_buffers[myband][n] = 0;
-	}
-    }   
-
     if (lpc_r2c_output_buffers[myband] == NULL)
     {
 	lpc_r2c_output_buffers[myband] = (complex*) MALLOC(lpc_r2c_plan_sizes[myband] * sizeof(complex));
@@ -1556,14 +1545,6 @@ void lpc( double *y, int len, int order, int compr, float *poles, int myband )
 	pthread_mutex_unlock(&fftw_mutex);
 #endif
     }
-    fftw_execute(lpc_r2c_plans[myband]);
-
-    for ( int n = 0; n < N; n++ )
-    {
-	lpc_r2c_output_buffers[myband][n] = lpc_r2c_output_buffers[myband][n]
-	    *conj(lpc_r2c_output_buffers[myband][n])
-	    /len; //add compr
-    }
 
     if (lpc_c2r_output_buffers[myband] == NULL)
     {
@@ -1583,6 +1564,28 @@ void lpc( double *y, int len, int order, int compr, float *poles, int myband )
 	pthread_mutex_unlock(&fftw_mutex);
 #endif
     }
+
+    for ( int n = 0; n < N; n++ )
+    {
+	if ( n < len )
+	{
+	    lpc_r2c_input_buffers[myband][n] = y[n];
+	}
+	else
+	{
+	    lpc_r2c_input_buffers[myband][n] = 0;
+	}
+    }   
+
+    fftw_execute(lpc_r2c_plans[myband]);
+
+    for ( int n = 0; n < N; n++ )
+    {
+	lpc_r2c_output_buffers[myband][n] = lpc_r2c_output_buffers[myband][n]
+	    *conj(lpc_r2c_output_buffers[myband][n])
+	    /len; //add compr
+    }
+
     fftw_execute(lpc_c2r_plans[myband]);
     for ( int n = 0; n < N; n++ )
     {
@@ -1877,7 +1880,7 @@ int *read_VAD(int N, int Fs, int* Nindices)
     return indices;
 }
 
-int *check_VAD(float *x, int N, int Fs, int *Nindices)
+int *check_VAD(short *x, int N, int Fs, int *Nindices)
 {
     int NB_FRAME_THRESHOLD_LTE = 10;
     float LAMBDA_LTE = 0.97;
@@ -1903,7 +1906,10 @@ int *check_VAD(float *x, int N, int Fs, int *Nindices)
     float *copy = MALLOC(sizeof(float) * Ncopy);
     if (Fs == 8000)
     {
-	memcpy(copy, x, sizeof(float) * N);
+	for (int i = 0; i < Ncopy; i++) {
+	    copy[i] = x[i];
+	}
+//	memcpy(copy, x, sizeof(float) * N);
     }
     else
     {
@@ -1991,7 +1997,7 @@ int *check_VAD(float *x, int N, int Fs, int *Nindices)
     return indices;
 }
 
-float * fdlpfit_full_sig(float *x, int N, int Fs, int *Np)
+float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 {
     int NNIS = 0;
     int* NIS = NULL;
@@ -2238,6 +2244,7 @@ float * fdlpfit_full_sig(float *x, int N, int Fs, int *Np)
 		y_filt[i][n] = 0;
 	    }
 	}
+
 	info[i].y = y_filt[i];
 	info[i].len = Nsub;
 	info[i].order = *Np;
@@ -2275,7 +2282,7 @@ float * fdlpenv( float *p, int Np, int N, int myband )
 {
     float *env = (float *) MALLOC( N*sizeof(float) );
 
-    int nfft = 2 * (MAX(Np, N) - 1); // --> N = nfft / 2 + 1 == half (fft is symmetric)
+    int nfft = 2 * MAX(Np, N) - 1; // --> N = nfft / 2 + 1 == half (fft is symmetric)
     if (nfft != fdlpenv_plan_sizes[myband])
     {
 	fdlpenv_plan_sizes[myband] = nfft;
@@ -2760,6 +2767,7 @@ void* fdlpenv_pthread_wrapper(void* arg)
 	fenv = fdlpenv(info->poles, info->Np, info->ffdlplen, info->band);
     }
 #endif
+
     int fnum = info->fnum;
     int send1 = info->send;
     int flen1 = info->flen;
@@ -2849,88 +2857,95 @@ void* fdlpenv_pthread_wrapper(void* arg)
 	float* env_log = (float*) MALLOC(Npad2 * sizeof(float));
 	float* env_adpt = (float*) MALLOC(Npad2 * sizeof(float));
 
-	for (int k =0;k<send1;k++)
-	{
-	    env_log[k] = icsi_log(env[k],LOOKUP_TABLE,nbits_log);     
-	    //env_log[k] = log(env[k]);
-	    sleep(0);	// Found out that icsi log is too fast and gives errors 
-	}
-
-	for ( int n = 0; n < Npad1; n++ )
-	{
-	    if ( n < mirr_len )
-	    {
-		env_pad1[n] = env_log[mirr_len-1-n];
-	    }
-	    else if ( n >= mirr_len && n < mirr_len + send1 )
-	    {
-		env_pad1[n] = env_log[n-mirr_len];	    
-	    }
-	    else
-	    {
-		env_pad1[n] = env_log[send1-(n-mirr_len-send1+1)];
-	    }
-	}
-
-	float * frames = fconstruct_frames(&env_pad1, &Npad1, fdlpwin, fdlpolap, &nframes);
-
 	if (longterm_do_static == 1)
 	{
+	    for (int k =0;k<send1;k++)
+	    {
+		env_log[k] = icsi_log(env[k],LOOKUP_TABLE,nbits_log);     
+		//env_log[k] = log(env[k]);
+		sleep(0);	// Found out that icsi log is too fast and gives errors 
+	    }
+
+	    for ( int n = 0; n < Npad1; n++ )
+	    {
+		if ( n < mirr_len )
+		{
+		    env_pad1[n] = env_log[mirr_len-1-n];
+		}
+		else if ( n >= mirr_len && n < mirr_len + send1 )
+		{
+		    env_pad1[n] = env_log[n-mirr_len];	    
+		}
+		else
+		{
+		    env_pad1[n] = env_log[send1-(n-mirr_len-send1+1)];
+		}
+	    }
+
+	    float * frames = fconstruct_frames(&env_pad1, &Npad1, fdlpwin, fdlpolap, &nframes);
+
 	    spec2cep(frames, fdlpwin, nframes, nceps, nbands, info->band, 0, feats, 1 );
+
+	    FREE(frames);
 	}
-
-	FREE(frames);
-
-	// do delta here
-	float maxenv = 0;
-	for ( int n = 0; n < Npad2; n++ )
-	{
-	    if ( n < 1000/factor )
-	    {
-		env_pad2[n] = env[0];
-	    }
-	    else
-	    {
-		env_pad2[n] = env[n-1000/factor];
-	    }
-
-	    if ( env_pad2[n] > maxenv )
-	    {
-		maxenv = env_pad2[n];
-	    }
-	}
-
-	for ( int n = 0; n < Npad2; n++ )
-	{
-	    env_pad2[n] /= maxenv;
-	}      
-
-	adapt_m(env_pad2,Npad2,Fs1,env_adpt);
-
-	for ( int n = 0; n < Npad1; n++ )
-	{
-	    if ( n < mirr_len )
-	    {
-		env_pad1[n] = env_adpt[mirr_len-1-n+1000/factor];
-	    }
-	    else if ( n >= mirr_len && n < mirr_len + send1 )
-	    {
-		env_pad1[n] = env_adpt[n-mirr_len+1000/factor];	    
-	    }
-	    else
-	    {
-		env_pad1[n] = env_adpt[send1-(n-mirr_len-send1+1)+1000/factor];
-	    }
-	}
-
-	frames = fconstruct_frames(&env_pad1, &Npad1, fdlpwin, fdlpolap, &nframes);
 
 	if (longterm_do_dynamic == 1)
 	{
+	    // do delta here
+	    float maxenv = 0;
+	    for ( int n = 0; n < Npad2; n++ )
+	    {
+		if ( n < 1000/factor )
+		{
+		    env_pad2[n] = env[0];
+		}
+		else
+		{
+		    env_pad2[n] = env[n-1000/factor];
+		}
+
+		if ( env_pad2[n] > maxenv )
+		{
+		    maxenv = env_pad2[n];
+		}
+	    }
+
+	    for ( int n = 0; n < Npad2; n++ )
+	    {
+		env_pad2[n] /= maxenv;
+	    }      
+
+#if HAVE_LIBPTHREAD == 1
+	    pthread_mutex_lock(&adapt_mutex);
+#endif
+	    adapt_m(env_pad2,Npad2,Fs1,env_adpt);
+#if HAVE_LIBPTHREAD == 1
+	    pthread_mutex_unlock(&adapt_mutex);
+#endif
+
+	    for ( int n = 0; n < Npad1; n++ )
+	    {
+		if ( n < mirr_len )
+		{
+		    env_pad1[n] = env_adpt[mirr_len-1-n+1000/factor];
+		}
+		else if ( n >= mirr_len && n < mirr_len + send1 )
+		{
+		    env_pad1[n] = env_adpt[n-mirr_len+1000/factor];	    
+		}
+		else
+		{
+		    env_pad1[n] = env_adpt[send1-(n-mirr_len-send1+1)+1000/factor];
+		}
+	    }
+
+	    float* frames = fconstruct_frames(&env_pad1, &Npad1, fdlpwin, fdlpolap, &nframes);
+
 	    spec2cep(frames, fdlpwin, nframes, nceps, nbands, info->band, nceps * longterm_do_static, feats, 1);
+
+	    FREE(frames);
 	}
 
-	FREE(frames);
 	FREE(env);
 
 	FREE(env_pad1);
@@ -2945,7 +2960,7 @@ void* fdlpenv_pthread_wrapper(void* arg)
     return NULL;
 }
 
-void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int nfeatfr, int numframes, int *dim, float **spectrogram)
+void compute_fdlp_feats( short *x, int N, int Fs, int* nceps, float **feats, int nfeatfr, int numframes, int *dim, float **spectrogram)
 {
     int flen= DEFAULT_SHORTTERM_WINLEN_MS * Fs;   // frame length corresponding to 25ms
     int flen1 = flen / factor;
@@ -2965,15 +2980,7 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 
     int Np;
     float *p = fdlpfit_full_sig(x,N,Fs,&Np);
-
-    //int Npad1 = send1+2*mirr_len;
-    //float *env_pad1 = (float *) MALLOC(Npad1*sizeof(float));
-
-    //int Npad2 = send1+1000/factor;
-    //float *env_pad2 = (float *) MALLOC(Npad2*sizeof(float));
-    //float *env_log = (float *) MALLOC(Npad2*sizeof(float));	
-    //float *env_adpt = (float *) MALLOC(Npad2*sizeof(float));
-
+     
     //int nframes;
     float *hamm = hamming(flen1);  // Defining the Hamming window
     float *fhamm = NULL;
@@ -3011,7 +3018,7 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 	fprintf(stderr, "Parameters: (nframes=%d,  dim=%d)\n", numframes, *dim); 
     }
 
-    int nframes = 0;
+    int *nframesarray = (int*) MALLOC(nbands * sizeof(int));
     struct fdlpenv_info* info = (struct fdlpenv_info*) MALLOC(nbands * sizeof(struct fdlpenv_info));
     for (int i = 0; i < nbands; i++ )
     {
@@ -3031,7 +3038,7 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
 	info[i].fdlpwin = fdlpwin;
 	info[i].fdlpolap = fdlpolap;
 	info[i].nceps = *nceps;
-	info[i].nframes = &nframes;
+	info[i].nframes = &nframesarray[i];
 	info[i].energybands = energybands;
 	info[i].feats = *feats;
 	info[i].spectrogram = *spectrogram;
@@ -3043,6 +3050,13 @@ void compute_fdlp_feats( float *x, int N, int Fs, int* nceps, float **feats, int
     }
 
     run_threads(band_threads, nbands);
+    // make sure all nframes are the same, just to be safe
+    int nframes = nframesarray[0];
+    for (int i = 1; i < nbands; i++) {
+	if (nframesarray[i] != nframes) {
+	    fatal("one of the threads got a different number of feature frames?!");
+	}
+    }
 
     if (do_spec)
     {
@@ -3089,7 +3103,7 @@ int main(int argc, char **argv)
     fill_icsi_log_table(nbits_log,LOOKUP_TABLE); 
 
     int N;
-    float *signal = readsignal_file(infile, &N);
+    short *signal = readsignal_file(infile, &N);
     int Nsignal = N;
 
     fprintf(stderr, "Input file = %s; N = %d samples\n", infile, N);
@@ -3112,8 +3126,8 @@ int main(int argc, char **argv)
     int fdlpwin = (int)(fdplp_win_len_sec * FDLPWIN_SEC2SHORTTERMMULT_FACTOR * fwin);
     int fdlpolap = DEFAULT_FDLPWIN_SHIFT_MS * Fs;  
     int nframes;
-    //int add_samp;
-    float *frames = fconstruct_frames(&signal, &N, fdlpwin, fdlpolap, &nframes);
+    int add_samp;
+    short *frames = sconstruct_frames(&signal, &N, fdlpwin, fdlpolap, &nframes, &add_samp);
     //add_samp = N - Nsignal;
 
     // read in VAD if we have to
@@ -3158,25 +3172,6 @@ int main(int argc, char **argv)
 	vad_label_start = 0;
     }
 
-    // DEBUG
-    //FILE *fd = fopen("speech_signal.txt", "w");
-    //for (int i = 0; i < N; i++) {
-    //    fprintf(fd, "%d ", signal[i]);
-    //}
-    //fclose(fd);
-
-    //fprintf(stderr, "Created %d frames of %d samples each, overlap %d\n", nframes, fdlpwin, fdlpolap);
-
-    // DEBUG
-    //fd = fopen("speech_frames.txt", "w");
-    //for (int i = 0; i < nframes; i++) {
-    //    for (int j = 0; j < fdlpwin; j++) {
-    //        fprintf(fd, "%d ", frames[i * fdlpwin + j]);
-    //    }
-    //    fprintf(fd, "\n");
-    //}
-    //fclose(fd);
-
     // Compute the feature vector time series
     int nceps = num_cepstral_coeffs;
     int dim = 0;
@@ -3194,7 +3189,7 @@ int main(int argc, char **argv)
 	{
 	    local_size = Nsignal - f * (fdlpwin - fdlpolap);
 	}
-	float *xwin = frames+f*fdlpwin;
+	short *xwin = frames+f*fdlpwin;
 	if (f < nframes - 1 && Nsignal - (f + 1) * (fdlpwin - fdlpolap) < 0.2 * Fs)
 	{
 	    // have at least .2 seconds in the last frame or just enlarge the second-to-last frame
@@ -3207,7 +3202,7 @@ int main(int argc, char **argv)
 	    xwin = signal + (Nsignal - local_size);
 	}
 
-	fdither( xwin, local_size, 1 );
+	sdither( xwin, local_size, 1 );
 	sub_mean( xwin, local_size );
 
 	int nfeatfr = (int)floor((local_size - fwin)/fstep)+1;
@@ -3268,6 +3263,7 @@ int main(int argc, char **argv)
 #if HAVE_LIBPTHREAD == 1
     pthread_mutex_destroy(&fftw_mutex);
     pthread_mutex_destroy(&tpool_mutex);
+    pthread_mutex_destroy(&adapt_mutex);
     pthread_cond_destroy(&tpool_cond);
 #else
     int mc = get_malloc_count();

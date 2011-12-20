@@ -108,17 +108,17 @@ float *readfeats_file(char *fn, int D, int *fA, int *fB, int *N)
    return (float*) readchars_file(fn, (*fA)*D*sizeof(float), &nbytesread);
 }
 
-float *readsignal_file(char *fn, int *N) 
+short *readsignal_file(char *fn, int *N) 
 {
    int nbytes = lenchars_file(fn);
    *N = nbytes/sizeof(short);
    short *data = (short *)readchars_file(fn, 0, &nbytes);
-   float *signal = MALLOC(sizeof(float) * (*N));
-   for (int i = 0; i < *N; i++) {
-    signal[i] = (float)data[i];
-   }
-   FREE(data);
-   return signal;
+   //float *signal = MALLOC(sizeof(float) * (*N));
+   //for (int i = 0; i < *N; i++) {
+   // signal[i] = (float)data[i];
+   //}
+   //FREE(data);
+   return data;
 }
 
 void writefeats_file(char *fn, float *feats, int D, int nframes) 

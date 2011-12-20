@@ -21,7 +21,7 @@ int lenchars_file(char* fn);
 char* readchars_file(char* fn, long offset, int* nread);
 
 float *readfeats_file(char *fn, int D, int *fA, int *fB, int *N);
-float *readsignal_file(char *fn, int *N);
+short *readsignal_file(char *fn, int *N);
 void writefeats_file(char *fn, float *feats, int D, int nframes);
 void printfeats_file(char *fn, float *feats, int D, int nframes);
 char *mmap_file(char *fn, int *len);
