@@ -58,6 +58,7 @@ int factor = -1;
 int Fs1 = -1;
 int do_gain_norm = 1;
 int do_spec = 0;
+int do_plp2 = 0;
 int skip_bands = 0;
 int axis = AXIS_BARK;
 float * dctm = NULL;
@@ -93,6 +94,8 @@ int shortterm_do_ddelta = 1;
 int longterm_do_static = 1;
 int longterm_do_dynamic = 1;
 int num_cepstral_coeffs = -1;
+int plp2_order = -1;
+float plp2_lift_coeff = 0.0;
 
 float* Pn_buf = NULL;
 int Pn_buf_valid = 0;
@@ -551,6 +554,7 @@ void usage()
 	    " -feat <flag>\t\tFeature type to generate. (0)\n"
 	    "\t\t\t\t0: Long-term modulation features\n"
 	    "\t\t\t\t1: Short-term spectral features\n"
+	    "\t\t\t\t2: Short-term PLP^2 features\n"
 	    " -spec <flag>\t\tAlternative legacy name for -feat\n"
 	    " -specgram <flag>\tSpectrogram output. If this option is given, -feat will have no effect and processing ends after spectrogram output. (0)\n"
 	    " -nceps <int>\t\tNumber of cepstral coefficients to use. (14 for modulation features, 13 for short-term features)\n"
@@ -563,6 +567,8 @@ void usage()
 	    "\t\t\t\t0: Only include <nceps> statically compressed modulation coefficients per band\n"
 	    "\t\t\t\t1: Only include <nceps> dynamically compressed modulation coefficients per band\n"
 	    "\t\t\t\t2: <nceps> statically compressed modulation coefficients + <nceps> dynamically compressed modulation coefficients, per band\n"
+	    " -plp2-order <int>\tOrder of second lpc-computation when calculating PLP^2 features (nceps - 1)\n"
+	    " -plp2-liftering <float>\tLiftering coefficient for the PLP part in PLP^2 (0.0 -> no liftering)\n"
 	    " -downsampling-factor <int>\tBy which factor to downsample the fdlp envelope. Considerably speeds up computation. (1)\n"
 	    "\t\t\t\tA factor of 20 was found to be useful for 8kHz data.\n"
 	    " -downsampling-sr <int>\tWhat sample rate to downsample the fdlp envelope to. (-sr/-downsampling-factor)\n"
@@ -685,8 +691,15 @@ void parse_args(int argc, char **argv)
 		do_spec = str_to_int(argv[++i], "-feat");
 		if (do_spec != 0 && do_spec != 1)
 		{
-		    fprintf(stderr, "Error: -feat: Unsupported feature type!\n");
-		    usage();
+		    if (do_spec == 2) {
+			do_spec = 1;
+			do_plp2 = 1;
+		    }
+		    else
+		    {
+			fprintf(stderr, "Error: -feat: Unsupported feature type!\n");
+			usage();
+		    }
 		}
 	    }
 	    else
@@ -949,6 +962,30 @@ void parse_args(int argc, char **argv)
 		usage();
 	    }
 	}
+	else if ( strcmp(argv[i], "-plp2-order") == 0 )
+	{
+	    if (i < argc - 1)
+	    {
+		plp2_order = str_to_int(argv[++i], "-plp2-order");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No -plp2-order given!\n");
+		usage();
+	    }
+	}
+	else if ( strcmp(argv[i], "-plp2-liftering") == 0 )
+	{
+	    if (i < argc - 1)
+	    {
+		plp2_lift_coeff = str_to_float(argv[++i], "-plp2-liftering");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No -plp2-liftering given!\n");
+		usage();
+	    }
+	}
 	else if ( strcmp(argv[i], "-downsampling-factor") == 0 )
 	{
 	    if (i < argc - 1)
@@ -1026,6 +1063,11 @@ void parse_args(int argc, char **argv)
     {
 	num_cepstral_coeffs = (do_spec == 0 ? DEFAULT_LONGTERM_NCEPS : DEFAULT_SHORTTERM_NCEPS);
     }
+
+    if (do_plp2 && plp2_order == -1) {
+	plp2_order = num_cepstral_coeffs - 1;
+    }
+
     if (factor < 0 && Fs1 > 0)
     {
 	factor = Fs / Fs1;
@@ -2057,6 +2099,7 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
     int fdlpwin = N;
 
     double *y = dct_buffer;
+    int Fs_tmp = Fs;
     if (limit_range)
     {
 	float lo_freq = 125.;
@@ -2067,6 +2110,7 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 
 	y = y + lo_offset;
 	fdlpwin = hi_offset - lo_offset + 1;
+	Fs_tmp = 8000;
     }
 
     float nyqbar;
@@ -2076,16 +2120,16 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
     switch (axis)
     {
 	case AXIS_MEL:
-	    nyqbar = hz2mel(Fs/2);
+	    nyqbar = hz2mel(Fs_tmp/2);
 	    numbands = ceil(nyqbar)+1;
 	    break;
 	case AXIS_BARK:
-	    nyqbar = hz2bark(Fs/2);
+	    nyqbar = hz2bark(Fs_tmp/2);
 	    numbands = ceil(nyqbar)+1;
 	    break;
 	case AXIS_LINEAR_MEL:
 	case AXIS_LINEAR_BARK:
-	    nyqbar = Fs/2;
+	    nyqbar = Fs_tmp/2;
 	    numbands = MIN(96, (int)round((float)fdlpwin/100.));
 	    if (old_nbands != 0) {
 		numbands = old_nbands;
@@ -2118,14 +2162,14 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 	switch (axis)
 	{
 	    case AXIS_MEL:
-		melweights(auditory_win_length, Fs, dB, wts, indices, &bank_nbands);
+		melweights(auditory_win_length, Fs_tmp, dB, wts, indices, &bank_nbands);
 		break;
 	    case AXIS_BARK:
-		barkweights(auditory_win_length, Fs, dB, wts, indices, &bank_nbands);
+		barkweights(auditory_win_length, Fs_tmp, dB, wts, indices, &bank_nbands);
 		break;
 	    case AXIS_LINEAR_MEL:
 	    case AXIS_LINEAR_BARK:
-		linweights(auditory_win_length, Fs, dB, &wts, &indices, &bank_nbands);
+		linweights(auditory_win_length, Fs_tmp, dB, &wts, &indices, &bank_nbands);
 		break;
 	}
 
@@ -2504,6 +2548,104 @@ void spec2cep(float * frames, int fdlpwin, int nframes, int ncep, int nbands, in
 		}
 	    }
 	}
+    }
+}
+
+void spec2cep4plpsquare(float* frames, int nbands, int nframes, int ncep, float* final_feats)
+{
+    complex* ifft_input = (complex*) MALLOC(nbands*sizeof(complex));
+    double* ifft_output = (double*) MALLOC(nbands * sizeof(double));
+    fftw_plan ifft = fftw_plan_dft_c2r_1d(
+	    nbands,
+	    ifft_input,
+	    ifft_output,
+	    FFTW_ESTIMATE
+	    );
+    float* lpc_coeffs = (float*) MALLOC((plp2_order + 1) * sizeof(float));
+    float* feats = (float*) MALLOC(nframes * ncep * sizeof(float));
+    float* c = (float*) MALLOC(ncep * sizeof(float));
+    
+    for (int f = 0; f < nframes; f++) {
+	// IFFT on power spectrum frame
+	for (int i = 0; i < nbands; i++) {
+	    ifft_input[i] = frames[f*nbands + i];
+	}
+	fftw_execute(ifft);
+	// LPC on those coefficients
+	levinson(plp2_order, ifft_output, lpc_coeffs);
+	// copy over rasta's lpc2cep
+	c[0] = -log(lpc_coeffs[0]);
+	c[1] = -(double)lpc_coeffs[1] / lpc_coeffs[0];
+	for (int i = 2; i < ncep; i++) {
+	    float sum = (i <= plp2_order ? i * lpc_coeffs[i] / lpc_coeffs[0] : 0.);
+	    for (int j = 2; j <= i; j++) {
+		int jb = i - j + 2;
+		if (j <= plp2_order + 1) {
+		    sum += lpc_coeffs[j-1] * c[jb - 1] * (jb - 1) / lpc_coeffs[0];
+		}
+	    }
+	    c[i] = -(double)sum / i;
+	}
+	feats[f * ncep + 0] = c[0];
+	for (int i = 1; i < ncep; i++) {
+	    if (plp2_lift_coeff != 0.0)
+	    {
+		double d1 = (double)(i);
+		double d2 = (double)(plp2_lift_coeff);
+		feats[f * ncep + i] = pow(d1, d2) * c[i];
+	    }
+	    else
+	    {
+		feats[f * ncep + i] = c[i];
+	    }
+	}
+    }
+    fftw_destroy_plan(ifft);
+    // delta & double delta
+    float *del = NULL;
+    if (shortterm_do_delta == 1)
+    {
+	del = deltas(feats, nframes,ncep,9);
+    }
+    float *ddel = NULL;
+    if (shortterm_do_ddelta == 1)
+    {
+	float *tempdel = deltas(feats,nframes,ncep,5);
+	ddel = deltas(tempdel,nframes,ncep,5);
+	FREE(tempdel);
+    }
+    int dimmult = 1 + shortterm_do_delta + shortterm_do_ddelta;
+    int dim = dimmult*ncep;
+    for ( int f = 0; f < nframes; f++ )
+    {
+	for (int cep = 0; cep < dim; cep++)
+	{
+	    if (cep < ncep)
+	    {
+		final_feats[f*dim+cep]=feats[f*ncep+cep];
+	    }
+	    else if (cep < 2*ncep && shortterm_do_delta == 1)
+	    {
+		final_feats[f*dim+cep]=del[f*ncep+cep-ncep];
+	    }
+	    else
+	    {
+		final_feats[f*dim+cep]=ddel[f*ncep+cep-2*ncep];
+	    }
+	}
+    }	
+    FREE(feats);
+    FREE(ifft_input);
+    FREE(ifft_output);
+    FREE(lpc_coeffs);
+    FREE(c);
+    if (del != NULL)
+    {
+	FREE(del);
+    }
+    if (ddel != NULL)
+    {
+	FREE(ddel);
     }
 }
 
@@ -3069,7 +3211,14 @@ void compute_fdlp_feats( short *x, int N, int Fs, int* nceps, float **feats, int
 	}
 	else
 	{
-	    spec2cep4energy(energybands, nbands, nframes, *nceps, *feats, 0);
+	    if (do_plp2)
+	    {
+		spec2cep4plpsquare(energybands, nbands, nframes, *nceps, *feats);
+	    }
+	    else
+	    {
+		spec2cep4energy(energybands, nbands, nframes, *nceps, *feats, 0);
+	    }
 	}
     }
 
@@ -3111,8 +3260,14 @@ int main(int argc, char **argv)
     fprintf(stderr, "Limit DCT range: %d\n", limit_range);
     fprintf(stderr, "Apply wiener filter: %d (alpha=%g)\n", do_wiener, wiener_alpha);
 
-    fprintf(stderr, "Feature type: %s\n", (do_spec ? (specgrm ? "spectrogram" : "spectral") : "modulation"));
+    fprintf(stderr, "Feature type: %s\n", (do_spec ? (specgrm ? "spectrogram" : (do_plp2 ? "PLP^2" : "spectral")) : "modulation"));
     fprintf(stderr, "FDPLP window length: %gs\n", fdplp_win_len_sec);
+
+    if (do_plp2)
+    {
+	fprintf(stderr, "PLP^2 Model order: %d\n", plp2_order);
+	fprintf(stderr, "PLP^2 Liftering coefficient: %g\n", plp2_lift_coeff);
+    }
 
     int fwin = DEFAULT_SHORTTERM_WINLEN_MS * Fs;
     int fstep = DEFAULT_SHORTTERM_WINSHIFT_MS * Fs; 
