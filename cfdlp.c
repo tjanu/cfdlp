@@ -1489,11 +1489,11 @@ void levinson(int p, double *phi, float *poles)
 	    alpha[i*(p+1)+j] = alpha[(i-1)*(p+1)+j] + k[i]*alpha[(i-1)*(p+1)+i-j];
 	}
 	E[i] = (1-k[i]*k[i])*E[i-1];
-	if (E[i] < 0.) {
-	    fprintf(stderr, "E[%d]=%g, k[%d]=%g, k[i]^2=%g, E[%d-1]=%g\n",
-		    i, E[i], i, k[i], k[i]*k[i], i, E[i-1]);
-	    fatal("E[i] negative -> something must be wrong with the data.");
-	}
+//	if (E[i] < 0.) {
+//	    fprintf(stderr, "E[%d]=%g, k[%d]=%g, k[i]^2=%g, E[%d-1]=%g\n",
+//		    i, E[i], i, k[i], k[i]*k[i], i, E[i-1]);
+//	    fatal("E[i] negative -> something must be wrong with the data.");
+//	}
     }
 
     // Copy final iteration coeffs to output array
