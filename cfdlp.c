@@ -85,6 +85,8 @@ int energy_normalize = 0;
 float energy_silence_floor = 50.0;
 
 int limit_range = 0;
+float limit_lower = 125.0;
+float limit_upper = 3800.0;
 int do_wiener = 0;
 float wiener_alpha = 0.9;
 int truncate_last = 0;
@@ -561,6 +563,8 @@ void usage()
 	    "\nFeature generation options:\n\n"
 	    " -gn <flag>\t\tGain Normalization (1) \n"
 	    " -limit-range <flag>\tLimit DCT-spectrum to 125-3800Hz before FDPLP processing (0)\n"
+	    " -limit-lower <float>\tChange lower boundary of the spectrum-limit if limit-range 1 is set (125.0)\n"
+	    " -limit-upper <float>\tChange upper boundary of the spectrum-limit if limit-range 1 is set (3800.0)\n"
 	    " -axis <str>\t\tbark,mel,linear-mel,linear-bark (bark)\n"
 	    " -pole-factor <float>\tThe model order calculated as a length in samples divided by an axis-dependend factor that can be given here (bark:fdplpwin/200, mel:fdplpwin/100, linear-*:filter-len/6)\n"
 	    " -skip-bands <int n>\tWhether or not to skip the first n bands when computing the features (useful value for telephone data: 2) (0)\n"
@@ -857,6 +861,30 @@ void parse_args(int argc, char **argv)
 	    else
 	    {
 		fprintf(stderr, "No limit range flag given!\n");
+		usage();
+	    }
+	}
+	else if ( strcmp(argv[i], "-limit-lower") == 0 )
+	{
+	    if (i < argc - 1)
+	    {
+		limit_lower = str_to_float(argv[++i], "-limit-lower");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No lower limit given!\n");
+		usage();
+	    }
+	}
+	else if ( strcmp(argv[i], "-limit-upper") == 0 )
+	{
+	    if (i < argc - 1)
+	    {
+		limit_upper = str_to_float(argv[++i], "-limit-upper");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No upper limit given!\n");
 		usage();
 	    }
 	}
@@ -1215,6 +1243,12 @@ void parse_args(int argc, char **argv)
 		model_order_factor = 6.;
 		break;
 	}
+    }
+
+    if (limit_range == 1 && (limit_lower < 0. || limit_upper < 0. || limit_lower >= limit_upper))
+    {
+	fprintf(stderr, "Limits for DCT spectrum limitation are out of bounds (one of them < 0 or lower >= upper)!\n");
+	usage();
     }
 }
 
@@ -2272,15 +2306,12 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
     int Fs_tmp = Fs;
     if (limit_range)
     {
-	float lo_freq = 125.;
-	float hi_freq = 3800.;
-
-	int lo_offset = round(((float)N/((float)Fs/2.))*lo_freq) - 1;
-	int hi_offset = round(((float)N/((float)Fs/2))*hi_freq) - 1;
+	int lo_offset = round(((float)N/((float)Fs/2.))*limit_lower) - 1;
+	int hi_offset = round(((float)N/((float)Fs/2))*limit_upper) - 1;
 
 	y = y + lo_offset;
 	fdlpwin = hi_offset - lo_offset + 1;
-	Fs_tmp = 8000;
+	Fs_tmp = (int)(limit_upper * 2);
     }
 
     float nyqbar;
