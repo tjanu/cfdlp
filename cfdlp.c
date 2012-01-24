@@ -74,6 +74,15 @@ int nbands = 0;
 int auditory_win_length = 0;
 float fdplp_win_len_sec = 5;
 float model_order_factor = -1;
+float preem_coeff = 0.0;
+float padwin_ms = 0.0;
+int   padwin_samples = 0;
+int   padwin_samples1 = 0;
+
+int use_energy = 0;
+float energy_scale = 1.0;
+int energy_normalize = 0;
+float energy_silence_floor = 50.0;
 
 int limit_range = 0;
 int do_wiener = 0;
@@ -96,6 +105,7 @@ int longterm_do_dynamic = 1;
 int num_cepstral_coeffs = -1;
 int plp2_order = -1;
 float plp2_lift_coeff = 0.0;
+float lift_coeff = 0.0;
 
 float* Pn_buf = NULL;
 int Pn_buf_valid = 0;
@@ -541,6 +551,9 @@ void usage()
 	    "\t\t\t\tPlease be aware that, if wiener filtering is used, the alpha parameter affects the spectrum and the -specgram flag internally sets the feature type to 1 (default alpha 0.1)\n"
 	    " -sr <str>\t\tInput samplerate in Hertz. Only 8000 and 16000 Hz are supported. (8000)\n"
 
+	    "\nAudio preprocessing options:\n\n"
+	    " -pre-emphasis <float>\tPre-emphasize the audio signal with the given coefficient that has to be >= 0 and < 1 (0.0)\n"
+
 	    "\nWindowing options:\n\n"
 	    " -fdplpwin <sec>\tLength of FDPLP window in sec as a float (better for reverberant environments when gain normalization is used: 10) (5)\n"
 	    " -truncate-last <flag>\ttruncate last frame if number of samples does not fill the entire fdplp window (speeds up computation but also changes numbers) (0)\n"
@@ -551,6 +564,7 @@ void usage()
 	    " -axis <str>\t\tbark,mel,linear-mel,linear-bark (bark)\n"
 	    " -pole-factor <float>\tThe model order calculated as a length in samples divided by an axis-dependend factor that can be given here (bark:fdplpwin/200, mel:fdplpwin/100, linear-*:filter-len/6)\n"
 	    " -skip-bands <int n>\tWhether or not to skip the first n bands when computing the features (useful value for telephone data: 2) (0)\n"
+	    " -padding <float>\tSymmetrically pad the FDLP analysis window by <float> ms on each side. <float> <= 0.0 means no padding, 32ms was found to be useful. Helps with resolution deficencies at the boundaries. (0.0)\n"
 	    " -feat <flag>\t\tFeature type to generate. (0)\n"
 	    "\t\t\t\t0: Long-term modulation features\n"
 	    "\t\t\t\t1: Short-term spectral features\n"
@@ -574,6 +588,11 @@ void usage()
 	    " -downsampling-sr <int>\tWhat sample rate to downsample the fdlp envelope to. (-sr/-downsampling-factor)\n"
 	    "\t\t\t\tEssentially, this is an alternate way of giving -downsampling-factor independent of the sampling rate.\n"
 	    "\t\t\t\tIf both are given and do not match, -downsampling-factor takes precedence.\n"
+	    " -cepslifter <float>\tLiftering coefficient to use on short-term cepstral coefficients. 0.0 means no liftering. (0.0)\n"
+	    " -use-energy <flag>\tUse log signal energy instead of c0 (0)\n"
+	    " -normalize-energy <flag>\tNormalize the energy in the entire utterance to -E_min .. 1.0 if set to 1. Only effective if use-energy is 1. (0)\n"
+	    " -scale-energy <float>\tScale the log energy by this factor. Ony effective if use-energy is 1. (1.0)\n"
+	    " -silence-floor <float>\tGive the ratio between maximum and minimum energy in dB for scaling E_min. Only effective if use-energy set to 1. (50.0)\n"
 
 	    "\nAdditive noise suppression options:\n\n"
 	    " -apply-wiener <flag>\tApply Wiener filter (helps against additive noise) (0)\n"
@@ -667,6 +686,70 @@ void parse_args(int argc, char **argv)
 	    else
 	    {
 		fprintf(stderr, "No sample rate given!\n");
+		usage();
+	    }
+	}
+	else if ( strcmp(argv[i], "-pre-emphasis") == 0 )
+	{
+	    if (i < argc - 1)
+	    {
+		preem_coeff = str_to_float(argv[++i], "-pre-emphasis");
+		if (preem_coeff >= 1.0 || preem_coeff < 0.0)
+		{
+		    fatal("Pre-emphasis coefficient not in range 0 <= coeff < 1.");
+		}
+	    }
+	    else
+	    {
+		fprintf(stderr, "No pre-emphasis coefficient given!\n");
+		usage();
+	    }
+	}
+	else if ( strcmp(argv[i], "-use-energy") == 0 )
+	{
+	    if (i < argc - 1)
+	    {
+		use_energy = str_to_int(argv[++i], "-use-energy");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No flag given for -use-energy option.\n");
+		usage();
+	    }
+	}
+	else if ( strcmp(argv[i], "-normalize-energy") == 0 )
+	{
+	    if (i < argc - 1)
+	    {
+		energy_normalize = str_to_int(argv[++i], "-normalize-energy");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No flag given for normalize-energy option.\n");
+		usage();
+	    }
+	}
+	else if ( strcmp(argv[i], "-scale-energy") == 0 )
+	{
+	    if (i < argc - 1)
+	    {
+		energy_scale = str_to_float(argv[++i], "-scale-energy");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No energy scaling factor given!\n");
+		usage();
+	    }
+	}
+	else if ( strcmp(argv[i], "-silence-floor") == 0 )
+	{
+	    if (i < argc - 1)
+	    {
+		energy_silence_floor = str_to_float(argv[++i], "-silence-floor");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No silence floor ratio given!\n");
 		usage();
 	    }
 	}
@@ -835,6 +918,18 @@ void parse_args(int argc, char **argv)
 	    else
 	    {
 		fprintf(stderr, "No skip-bands flag given!\n");
+		usage();
+	    }
+	}
+	else if ( strcmp(argv[i], "-padding") == 0 )
+	{
+	    if (i < argc - 1)
+	    {
+		padwin_ms = str_to_float(argv[++i], "-padding");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No argument to -padding option given!\n");
 		usage();
 	    }
 	}
@@ -1010,6 +1105,18 @@ void parse_args(int argc, char **argv)
 		usage();
 	    }
 	}
+	else if ( strcmp(argv[i], "-cepslifter") == 0 )
+	{
+	    if (i < argc - 1)
+	    {
+		lift_coeff = str_to_float(argv[++i], "-cepslifter");
+	    }
+	    else
+	    {
+		fprintf(stderr, "No argument supplied for option -cepslifter!\n");
+		usage();
+	    }
+	}
 #if HAVE_LIBPTHREAD == 1
 	else if ( strcmp(argv[i], "-max-threads") == 0 )
 	{
@@ -1082,6 +1189,12 @@ void parse_args(int argc, char **argv)
 	Fs1 = Fs;
     }
 
+    if (padwin_ms > 0.0)
+    {
+	padwin_samples = padwin_ms / 1000.0 * Fs;
+	padwin_samples1 = padwin_ms / 1000.0 * Fs1;
+    }
+
     if (fdplp_win_len_sec <= 0.) {
 	fprintf(stderr, "FDLP window can not have a negative length!\n");
 	usage();
@@ -1145,6 +1258,21 @@ void sub_mean( short *x, int N )
     for ( int i = 0; i < N; i++ )
     {
 	x[i] -= mean;
+    }
+}
+
+void pre_emphasize(short *x, int N, float coeff)
+{
+    if (!(coeff >= 0.0 && coeff < 1.0))
+    {
+	fprintf(stderr, "WARNING: Not applying pre-emphasis: coefficient (%g) not in range 0 <= coefficient < 1.\n", coeff);
+	return;
+    }
+    if (coeff > 0.0)
+    { // actually do something
+	for (int i = 1; i < N; i++) { // 1 --> cannot pre-emphasize first sample
+	    x[i] = x[i] - coeff * x[i-1];
+	}
     }
 }
 
@@ -1220,6 +1348,48 @@ float *fconstruct_frames( float **x, int *N, int width, int overlap, int *nframe
     }
 
     return frames;
+}
+
+float* log_energies(short *x, int N, int Fs, int normalize_energies, float silence_floor, float scaling_factor)
+{
+    int nframes = 0;
+    int fwin = DEFAULT_SHORTTERM_WINLEN_MS * Fs;
+    int fstep = DEFAULT_SHORTTERM_WINSHIFT_MS * Fs; 
+    int add_samp = 0;
+    short *frames = sconstruct_frames(&x, &N, fwin, fwin - fstep, &nframes, &add_samp);
+
+    float* energies = (float*) MALLOC (nframes * sizeof(float));
+    float e_max = -1e37;
+
+    // calculate energies and find maximum for normalizing
+    for (int f = 0; f < nframes; f++)
+    {
+	energies[f] = 0.;
+	for (int n = 0; n < fwin; n++)
+	{
+	    energies[f] += frames[f * fwin + n] * frames[f * fwin + n];
+	}
+	energies[f] = log10f(energies[f]);
+	if (energies[f] > e_max)
+	{
+	    e_max = energies[f];
+	}
+    }
+    float e_floor = e_max / exp10(silence_floor / 10.0f);
+    for (int f = 0; f < nframes; f++)
+    {
+	if (energies[f] < e_floor)
+	{
+	    energies[f] = e_floor;
+	}
+	if (normalize_energies == 1)
+	{
+	    energies[f] = energies[f] - e_max + 1.0f;
+	}
+	energies[f] *= scaling_factor;
+    }
+    FREE(frames);
+    return energies;
 }
 
 // Function to implement generalized hamming window
@@ -2700,6 +2870,10 @@ void spec2cep4energy(float * frames, int fdlpwin, int nframes, int ncep, float *
 		    }
 		}
 	    }
+	    if (lift_coeff > 0.0)
+	    {
+		feat[i] *= (1. + (lift_coeff / 2.) * sin(M_PI * (float)i / lift_coeff));
+	    }
 	}
     }
     float *del = NULL;
@@ -2928,6 +3102,24 @@ void* fdlpenv_pthread_wrapper(void* arg)
     float* hamm = info->hamm;
     float *fhamm = info->fhamm;
 
+    if (padwin_samples1 > 0)
+    {
+	float* newenv = (float*) MALLOC((info->fdlplen - 2*padwin_samples1) * sizeof(float));
+	memcpy(newenv, env+padwin_samples1, (info->fdlplen - 2*padwin_samples1) * sizeof(float));
+	FREE(env);
+	env = newenv;
+	fnum = floor((info->fdlplen - 2*padwin_samples1 - flen1)/fhop1)+1;
+	send1 = (fnum-1)*fhop1 + flen1;
+    }
+    if (specfile != NULL && factor != 1 && padwin_samples > 0)
+    {
+	float* newenv = (float*) MALLOC((info->ffdlplen - 2 * padwin_samples) * sizeof(float));
+	memcpy(newenv, env+padwin_samples, (info->ffdlplen - 2 * padwin_samples) * sizeof(float));
+	FREE(env);
+	env = newenv;
+	send = (fnum-1)*fhop+flen;
+    }
+
     if (do_spec || specfile != NULL)
     {
 	float *frames = fconstruct_frames(&env, &send1, flen1, flen1-fhop1, &nframes);
@@ -3114,7 +3306,7 @@ void compute_fdlp_feats( short *x, int N, int Fs, int* nceps, float **feats, int
     // What's the last sample that feacalc will consider?
     int send = (fnum-1)*fhop + flen;
     int send1 = send / factor;
-    int fdlplen = send / factor;
+    int fdlplen = N / factor;
     int trap = DEFAULT_LONGTERM_TRAP_FRAMECTX;  // 10 FRAME context duration
     int mirr_len = trap*fhop1;
     int fdlpwin = (DEFAULT_LONGTERM_WINLEN_MS * Fs+flen)/factor;  // Modulation spectrum Computation Window.
@@ -3278,12 +3470,30 @@ int main(int argc, char **argv)
 
     Nsignal = N;
 
+    float* energies = NULL;
+    if (use_energy)
+    {
+	energies = log_energies(signal, Nsignal, Fs, energy_normalize, energy_silence_floor, energy_scale);
+    }
+
     int fdlpwin = (int)(fdplp_win_len_sec * FDLPWIN_SEC2SHORTTERMMULT_FACTOR * fwin);
     int fdlpolap = DEFAULT_FDLPWIN_SHIFT_MS * Fs;  
     int nframes;
     int add_samp;
     short *frames = sconstruct_frames(&signal, &N, fdlpwin, fdlpolap, &nframes, &add_samp);
     //add_samp = N - Nsignal;
+
+    int fdlp_frame_len = fdlpwin + 0.2 * Fs; // + 0.2*Fs because this is the maximally appended frame length at the end
+    if (padwin_samples > 0)
+    {
+	fdlp_frame_len += 2 * padwin_samples;
+    }
+    else
+    {
+	padwin_samples = 0;
+	padwin_samples1 = 0;
+    }
+    short *current_frame = (short*) MALLOC(fdlp_frame_len * sizeof(short));
 
     // read in VAD if we have to
     if (vadfile != NULL) {
@@ -3356,26 +3566,42 @@ int main(int argc, char **argv)
 	    stop_before = 1;
 	    xwin = signal + (Nsignal - local_size);
 	}
+	memcpy(current_frame + padwin_samples, xwin, local_size * sizeof(short));
+	for (int i = 0; i < padwin_samples; i++) {
+	    current_frame[padwin_samples - i - 1] = current_frame[padwin_samples + i];
+	    current_frame[padwin_samples + local_size + i] = current_frame[padwin_samples + local_size - i - 1];
+	}
+	local_size += 2 * padwin_samples;
 
-	sdither( xwin, local_size, 1 );
-	sub_mean( xwin, local_size );
+	sdither( current_frame, local_size, 1 );
+	sub_mean( current_frame, local_size );
+	pre_emphasize(current_frame, local_size, preem_coeff);
 
 	int nfeatfr = (int)floor((local_size - fwin)/fstep)+1;
 
 	if (feats == NULL)
 	{
-	    compute_fdlp_feats( xwin, local_size, Fs, &nceps, &feats, nfeatfr, nframes, &dim, &spectrogram );
+	    compute_fdlp_feats( current_frame, local_size, Fs, &nceps, &feats, nfeatfr, nframes, &dim, &spectrogram );
 	}
 	else
 	{
 	    float *feat_mem = feats + nfeatfr_calculated * dim;
 	    float *specgram_mem = spectrogram + (specfile == NULL ? 0 : nfeatfr_calculated * nbands);
-	    compute_fdlp_feats( xwin, local_size, Fs, &nceps, &feat_mem, nfeatfr, nframes, &dim, &specgram_mem );
+	    compute_fdlp_feats( current_frame, local_size, Fs, &nceps, &feat_mem, nfeatfr, nframes, &dim, &specgram_mem );
 	}
 	nfeatfr_calculated += nfeatfr;
 	vad_label_start = nfeatfr_calculated;
 
 	if (verbose || f == nframes - 1 || stop_before) fprintf(stderr, "%f s\n",toc());
+    }
+
+    if (use_energy)
+    {
+	// replace zeroeth coefficient
+	for (int f = 0; f < fnum; f++)
+	{
+	    feats[f * dim + 0] = energies[f];
+	}
     }
 
     if (outfile)
@@ -3400,6 +3626,7 @@ int main(int argc, char **argv)
 	FREE(vad_labels);
     }
     FREE(signal);
+    FREE(current_frame);
     FREE(frames);
     FREE(feats);
     FREE(orig_wts);
@@ -3414,6 +3641,10 @@ int main(int argc, char **argv)
     if (band_threads != NULL)
     {
 	FREE(band_threads);
+    }
+    if (energies != NULL)
+    {
+	FREE(energies);
     }
 #if HAVE_LIBPTHREAD == 1
     pthread_mutex_destroy(&fftw_mutex);
