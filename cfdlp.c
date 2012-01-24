@@ -88,7 +88,7 @@ int limit_range = 0;
 float limit_lower = 125.0;
 float limit_upper = 3800.0;
 int do_wiener = 0;
-float wiener_alpha = 0.9;
+float wiener_alpha = -1;
 int truncate_last = 0;
 
 char *vadfile = NULL;
@@ -545,6 +545,10 @@ void usage()
 	    "\nOPTIONS\n\n"
 	    " -h, --help\t\tPrint this help and exit\n"
 	    " -v, --verbose\t\tPrint out the computation time for every fdlp window\n"
+	    " -c <filename>\t\tGive a configuration file name to read options from\n"
+	    "\t\tConfiguration file format is one option per line, newlines and lines starting with # are ignored\n"
+	    "\t\tThe option names are the same as the command-line options without the preceding dash, separated from its value with a = character\n"
+	    "\t\tThe file is parsed as soon as this option is encountered, so options appearing _after_ -c overwrite values in the config file.\n"
 	    "\nIO options:\n\n"
 	    " -i <str>\t\tInput file name. Only signed 16-bit little endian raw files are supported. REQUIRED\n"
 	    " -o <str>\t\tOutput file name for raw binary float output. Either this or -print is REQUIRED\n"
@@ -613,9 +617,337 @@ void usage()
 	    );
 }
 
+void parse_conffile(const char* filename)
+{
+    char *linebuf = (char*) MALLOC(2048 * sizeof(char));
+    char *linebuf_safe = linebuf;
+
+    FILE* conf = fopen(filename, "r");
+    if (!conf)
+    {
+	perror("Error opening config file");
+	exit(EXIT_FAILURE);
+    }
+
+    int linecount = 0;
+    while ( (linebuf = fgets(linebuf, 2047, conf)) != NULL )
+    {
+	linecount++;
+	int linelen = strlen(linebuf);
+	for (int i = linelen - 1; i > 0; i--)
+	{
+	    if (linebuf[i] == ' ' || linebuf[i] == '\n' || linebuf[i] == '\r')
+	    {
+		linebuf[i] = '\0';
+	    }
+	    else
+	    {
+		break;
+	    }
+	}
+	linelen = strlen(linebuf);
+	int wscnt = 0;
+	for (int i = 0; i < linelen; i++)
+	{
+	    if (linebuf[i] == ' ')
+	    {
+		wscnt++;
+	    }
+	    else
+	    {
+		break;
+	    }
+	}
+	linebuf = linebuf + wscnt;
+	linelen = strlen(linebuf);
+	if (linelen <= 0 || linebuf[0] == '#')
+	{
+	    continue;
+	}
+	char *name = linebuf;
+	char *value = NULL;
+	int eqpos = -1;
+	for (int i = 0; i < linelen; i++)
+	{
+	    if (linebuf[i] == '#')
+	    {
+		linebuf[i] = '\0';
+		int j = i - 1;
+		for (; j > 0; j--)
+		{
+		    if (linebuf[j] != ' ')
+		    {
+			break;
+		    }
+		    linebuf[j] = '\0';
+		}
+		linelen = j;
+		break;
+	    }
+	}
+	for (int i = 0; i < linelen; i++)
+	{
+	    if (linebuf[i] == '=')
+	    {
+		eqpos = i;
+		linebuf[i] = '\0';
+		int j = i - 1;
+		for (; j > 0; j--)
+		{
+		    if (linebuf[j] != ' ')
+		    {
+			break;
+		    }
+		    linebuf[j] = '\0';
+		}
+		for (j = i+1; j < linelen; j++)
+		{
+		    if (linebuf[j] != ' ')
+		    {
+			break;
+		    }
+		    linebuf[j] = '\0';
+		}
+		value = &(linebuf[j]);
+		break;
+	    }
+	}
+	int namelen = strlen(name);
+	int vallen = strlen(value);
+	if (eqpos < 0 || namelen <= 0 || vallen <= 0)
+	{
+	    fprintf(stderr, "Config file: Line %d malformed!\n", linecount);
+	    exit(EXIT_FAILURE);
+	}
+
+	if ( strcmp(name, "v") == 0
+		|| strcmp(name, "verbose") == 0)
+	{
+	    verbose = str_to_int(value, "verbose");
+	}
+	else if ( strcmp(name, "sr") == 0 )
+	{
+	    Fs = str_to_int(value, "sr");
+	    if (Fs != 8000 && Fs != 16000) {
+		fatal("Unsupported sample rate! Only 8000 and 16000 are supported.");
+	    }
+	}
+	else if ( strcmp(name, "pre-emphasis") == 0 )
+	{
+	    preem_coeff = str_to_float(value, "pre-emphasis");
+	    if (preem_coeff >= 1.0 || preem_coeff < 0.0)
+	    {
+		fatal("Pre-emphasis coefficient not in range 0 <= coeff < 1.");
+	    }
+	}
+	else if ( strcmp(name, "use-energy") == 0 )
+	{
+	    use_energy = str_to_int(value, "use-energy");
+	}
+	else if ( strcmp(name, "normalize-energy") == 0 )
+	{
+	    energy_normalize = str_to_int(value, "normalize-energy");
+	}
+	else if ( strcmp(name, "scale-energy") == 0 )
+	{
+	    energy_scale = str_to_float(value, "scale-energy");
+	}
+	else if ( strcmp(name, "silence-floor") == 0 )
+	{
+	    energy_silence_floor = str_to_float(value, "silence-floor");
+	}
+	else if ( strcmp(name, "gn") == 0 )
+	{
+	    do_gain_norm = str_to_int(value, "gn");
+	}
+	else if ( strcmp(name, "spec") == 0 
+		|| strcmp(name, "feat") == 0
+		)
+	{
+	    do_spec = str_to_int(value, "feat");
+	    if (do_spec != 0 && do_spec != 1)
+	    {
+		if (do_spec == 2) {
+		    do_spec = 1;
+		    do_plp2 = 1;
+		}
+		else
+		{
+		    fprintf(stderr, "Error: feat: Unsupported feature type!\n");
+		    usage();
+		}
+	    }
+	}
+	else if ( strcmp(name, "axis") == 0 )
+	{
+	    if(strcmp(value, "bark") == 0)
+	    {
+		axis = AXIS_BARK;
+	    }
+	    else if (strcmp(value, "mel") == 0)
+	    {
+		axis = AXIS_MEL;
+	    }
+	    else if (strcmp(value, "linear-mel") == 0)
+	    {
+		axis = AXIS_LINEAR_MEL;
+	    }
+	    else if (strcmp(value, "linear-bark") == 0)
+	    {
+		axis = AXIS_LINEAR_BARK;
+	    }
+	    else
+	    {
+		fprintf(stderr, "unknown frequency axis scale: %s\n", value);
+		usage();
+	    }
+	}
+	else if ( strcmp(name, "pole-factor") == 0)
+	{
+	    model_order_factor = str_to_float(value, "pole-factor");
+	}
+	else if ( strcmp(name, "specgram") == 0 )
+	{
+	    specgrm = str_to_int(value, "specgram");
+	}
+	else if ( strcmp(name, "limit-range") == 0 )
+	{
+	    limit_range = str_to_int(value, "limit-range");
+	}
+	else if ( strcmp(name, "limit-lower") == 0 )
+	{
+	    limit_lower = str_to_float(value, "limit-lower");
+	}
+	else if ( strcmp(name, "limit-upper") == 0 )
+	{
+	    limit_upper = str_to_float(value, "limit-upper");
+	}
+	else if ( strcmp(name, "apply-wiener") == 0 )
+	{
+	    do_wiener = str_to_int(value, "apply-wiener");
+	}
+	else if ( strcmp(name, "wiener-alpha") == 0 )
+	{
+	    wiener_alpha = str_to_float(value, "wiener-alpha");
+	}
+	else if ( strcmp(name, "fdplpwin") == 0)
+	{
+	    fdplp_win_len_sec = str_to_float(value, "fdplpwin");
+	}
+	else if ( strcmp(name, "truncate-last") == 0)
+	{
+	    truncate_last = str_to_int(value, "truncate-last");
+	}
+	else if ( strcmp(name, "skip-bands") == 0)
+	{
+	    skip_bands = str_to_int(value, "skip-bands");
+	}
+	else if ( strcmp(name, "padding") == 0 )
+	{
+	    padwin_ms = str_to_float(value, "padding");
+	}
+	else if ( strcmp(name, "speechchar") == 0)
+	{
+	    speechchar = value[0];
+	}
+	else if ( strcmp(name, "nonspeechchar") == 0)
+	{
+	    nspeechchar = value[0];
+	}
+	else if ( strcmp(name, "vad-grace") == 0)
+	{
+	    vad_grace = str_to_int(value, "vad-grace");
+	}
+	else if ( strcmp(name, "nceps") == 0)
+	{
+	    num_cepstral_coeffs = str_to_int(value, "nceps");
+	}
+	else if ( strcmp(name, "shortterm-mode") == 0)
+	{
+	    int shortterm_mode = str_to_int(value, "shortterm-mode");
+	    switch (shortterm_mode)
+	    {
+		case 0:
+		    shortterm_do_delta = 0;
+		    shortterm_do_ddelta = 0;
+		    break;
+		case 1:
+		    shortterm_do_delta = 1;
+		    shortterm_do_ddelta = 0;
+		    break;
+		case 2:
+		    shortterm_do_delta = 0;
+		    shortterm_do_ddelta = 1;
+		    break;
+		case 3:
+		    shortterm_do_delta = 1;
+		    shortterm_do_ddelta = 1;
+		    break;
+		default:
+		    fprintf(stderr, "Unsupported shortterm-mode parameter!\n");
+		    usage();
+	    }
+	}
+	else if ( strcmp(name, "modulation-mode") == 0)
+	{
+	    int modmode = str_to_int(value, "modulation-mode");
+	    switch (modmode)
+	    {
+		case 0:
+		    longterm_do_static = 1;
+		    longterm_do_dynamic = 0;
+		    break;
+		case 1:
+		    longterm_do_static = 0;
+		    longterm_do_dynamic = 1;
+		    break;
+		case 2:
+		    longterm_do_static = 1;
+		    longterm_do_dynamic = 1;
+		    break;
+		default:
+		    fprintf(stderr, "Error: Unsupported modulation-mode parameter!\n");
+		    usage();
+	    }
+	}
+	else if ( strcmp(name, "plp2-order") == 0 )
+	{
+	    plp2_order = str_to_int(value, "plp2-order");
+	}
+	else if ( strcmp(name, "plp2-liftering") == 0 )
+	{
+	    plp2_lift_coeff = str_to_float(value, "plp2-liftering");
+	}
+	else if ( strcmp(name, "downsampling-factor") == 0 )
+	{
+	    factor = str_to_int(value, "downsampling-factor");
+	}
+	else if ( strcmp(name, "downsampling-sr") == 0 )
+	{
+	    Fs1 = str_to_int(value, "downsampling-sr");
+	}
+	else if ( strcmp(name, "cepslifter") == 0 )
+	{
+	    lift_coeff = str_to_float(value, "cepslifter");
+	}
+#if HAVE_LIBPTHREAD == 1
+	else if ( strcmp(name, "max-threads") == 0 )
+	{
+	    max_num_threads = str_to_int(value, "max-threads");
+	}
+#endif
+	else
+	{
+	    fprintf(stderr, "unknown arg: %s\n", name);
+	    usage();
+	}
+    }
+    fclose(conf);
+    FREE(linebuf_safe);
+}
+
 void parse_args(int argc, char **argv)
 {
-    int wiener_alpha_given = 0;
     for ( int i = 1; i < argc; i++ )
     {
 	if ( strcmp(argv[i], "-h") == 0
@@ -623,6 +955,18 @@ void parse_args(int argc, char **argv)
 		|| strcmp(argv[i], "-help") == 0)
 	{
 	    usage();
+	}
+	else if ( strcmp(argv[i], "-c") == 0)
+	{
+	    if (i < argc - 1)
+	    {
+		parse_conffile(argv[++i]);
+	    }
+	    else
+	    {
+		fprintf(stderr, "Error: -c option given without argument!\n");
+		usage();
+	    }
 	}
 	else if ( strcmp(argv[i], "-v") == 0
 		|| strcmp(argv[i], "--verbose") == 0
@@ -905,7 +1249,6 @@ void parse_args(int argc, char **argv)
 	    if (i < argc - 1)
 	    {
 		wiener_alpha = str_to_float(argv[++i], "-wiener-alpha");
-		wiener_alpha_given = 1;
 	    }
 	    else
 	    {
@@ -1183,9 +1526,16 @@ void parse_args(int argc, char **argv)
 	do_spec = 1;
     }
 
-    if (!wiener_alpha_given && do_spec)
+    if (wiener_alpha < 0.0)
     {
-	wiener_alpha = 0.1;
+	if (do_spec)
+	{
+	    wiener_alpha = 0.1;
+	}
+	else
+	{
+	    wiener_alpha = 0.9;
+	}
     }
 
     if (skip_bands < 0)
