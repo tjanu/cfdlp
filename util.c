@@ -10,6 +10,8 @@
 #include <sys/types.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <errno.h>
+#include <limits.h>
 
 int same_vectors(int *vec1, int n1, int *vec2, int n2)
 {
@@ -229,3 +231,54 @@ float toc( void )
 
    return (float)(newtime - lasttime);
 }
+
+int str_to_int(char *str, char* argname)
+{
+    char *endptr;
+    long val = -1;
+    int base = 10;
+
+    errno = 0;
+    val = strtol(str, &endptr, base);
+    if ((errno == ERANGE && (val == LONG_MAX || val == LONG_MIN))
+	    || (errno != 0 && val == 0)) {
+	fprintf(stderr, "Error when parsing option %s: ", argname);
+	perror("strtol");
+    }
+
+    if (endptr == str) {
+	fprintf(stderr, "No digits were found when parsing option %s\n", argname);
+    }
+
+    if (*endptr != '\0')
+    {
+	fprintf(stderr, "Excess characters after integer argument of option %s: %s\n", argname, endptr);
+    }
+
+    return (int)val;
+}
+
+float str_to_float(char *str, char *argname)
+{
+    char *endptr;
+    float val = 0.;
+
+    errno = 0;
+    val = strtof(str, &endptr);
+    if (errno != 0) {
+	fprintf(stderr, "Error when parsing option %s: ", argname);
+	perror("strtof");
+    }
+
+    if (endptr == str) {
+	fprintf(stderr, "No digits were found when parsing option %s\n", argname);
+    }
+
+    if (*endptr != '\0')
+    {
+	fprintf(stderr, "Excess characters after float argument of option %s: %s\n", argname, endptr);
+    }
+
+    return val;
+}
+

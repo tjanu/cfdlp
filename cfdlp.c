@@ -9,8 +9,6 @@
 #include <unistd.h>
 #include <math.h>
 #include <complex.h>
-#include <errno.h>
-#include <limits.h>
 #include "util.h"
 #include "icsilog.h"
 #include <fftw3.h>
@@ -347,62 +345,6 @@ void cleanup_fftw_plans()
 }
 
 void usage();
-
-int str_to_int(char *str, char* argname)
-{
-    char *endptr;
-    long val = -1;
-    int base = 10;
-
-    errno = 0;
-    val = strtol(str, &endptr, base);
-    if ((errno == ERANGE && (val == LONG_MAX || val == LONG_MIN))
-	    || (errno != 0 && val == 0)) {
-	fprintf(stderr, "Error when parsing option %s: ", argname);
-	perror("strtol");
-	usage();
-    }
-
-    if (endptr == str) {
-	fprintf(stderr, "No digits were found when parsing option %s\n", argname);
-	usage();
-    }
-
-    if (*endptr != '\0')
-    {
-	fprintf(stderr, "Excess characters after integer argument of option %s: %s\n", argname, endptr);
-	usage();
-    }
-
-    return (int)val;
-}
-
-float str_to_float(char *str, char *argname)
-{
-    char *endptr;
-    float val = 0.;
-
-    errno = 0;
-    val = strtof(str, &endptr);
-    if (errno != 0) {
-	fprintf(stderr, "Error when parsing option %s: ", argname);
-	perror("strtof");
-	usage();
-    }
-
-    if (endptr == str) {
-	fprintf(stderr, "No digits were found when parsing option %s\n", argname);
-	usage();
-    }
-
-    if (*endptr != '\0')
-    {
-	fprintf(stderr, "Excess characters after float argument of option %s: %s\n", argname, endptr);
-	usage();
-    }
-
-    return val;
-}
 
 void usage()
 {

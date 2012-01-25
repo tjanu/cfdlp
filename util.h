@@ -32,4 +32,7 @@ float toc(void);
 #define MAX(a,b) (((a) > (b)) ? (a) : (b))
 #define MIN(a,b) (((a) < (b)) ? (a) : (b))
 
+int str_to_int(char *str, char* argname);
+float str_to_float(char *str, char* argname);
+
 #endif
