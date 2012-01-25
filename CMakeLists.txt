@@ -9,6 +9,8 @@ set(srcs
     icsilog.c
     util.c
     adapt_m.c
+    windowing.c
+    filterbanks.c
     )
 set(libs)
 

@@ -1,3 +1,4 @@
+#define _GNU_SOURCE /* for exp10 */
 #include "util.h"
 #include <ctype.h>
 #include <fcntl.h>
@@ -12,6 +13,8 @@
 #include <unistd.h>
 #include <errno.h>
 #include <limits.h>
+
+#include "cfdlp.h"
 
 int same_vectors(int *vec1, int n1, int *vec2, int n2)
 {
@@ -280,5 +283,220 @@ float str_to_float(char *str, char *argname)
     }
 
     return val;
+}
+
+void sdither( short *x, int N, int scale ) 
+{
+    for ( int i = 0; i < N; i++ )
+    {
+	float r = ((float) rand())/RAND_MAX;
+	x[i] += round(scale*(2*r-1));
+    }
+}
+
+void fdither_absolute( float *x, int N, int scale ) 
+{
+    for ( int i = 0; i < N; i++ )
+    {
+	float r = ((float) rand())/RAND_MAX;
+	x[i] += fabs(round(scale*2*r-1));
+    }
+}
+
+void fdither( float *x, int N, int scale ) 
+{
+    for ( int i = 0; i < N; i++ )
+    {
+	float r = ((float) rand())/RAND_MAX;
+	x[i] += round(scale*2*r-1);
+    }
+}
+
+void sub_mean( short *x, int N ) 
+{
+    float sum = 0.;
+    for ( int i = 0; i < N; i++ )
+    {
+	sum += x[i];
+    }
+
+    short mean = round(sum/N);
+
+    for ( int i = 0; i < N; i++ )
+    {
+	x[i] -= mean;
+    }
+}
+
+void pre_emphasize(short *x, int N, float coeff)
+{
+    if (!(coeff >= 0.0 && coeff < 1.0))
+    {
+	fprintf(stderr, "WARNING: Not applying pre-emphasis: coefficient (%g) not in range 0 <= coefficient < 1.\n", coeff);
+	return;
+    }
+    if (coeff > 0.0)
+    { // actually do something
+	for (int i = 1; i < N; i++) { // 1 --> cannot pre-emphasize first sample
+	    x[i] = x[i] - coeff * x[i-1];
+	}
+    }
+}
+
+short *sconstruct_frames( short **x, int *N, int width, int overlap, int *nframes, int *add_samp)
+{
+    *nframes = ceil(((float) *N-width)/(width-overlap)+1);
+    int padlen = width + (*nframes-1)*(width-overlap);
+    *add_samp = padlen - *N;
+
+    *x = (short *) realloc(*x, padlen*sizeof(short));
+    memset(*x+*N, 0, sizeof(short)*(padlen-*N));
+    sdither(*x+*N, padlen-*N, 1);
+    *N = padlen;
+
+    int step = width-overlap;
+    short *frames = MALLOC(*nframes*width*sizeof(short));
+
+    for ( int f = 0; f < *nframes; f++ )
+    {
+	for ( int n = 0; n < width; n++ )
+	{
+	    frames[f*width+n] = *(*x + f*step+n);
+	}
+    }
+
+    return frames;
+}
+
+float *fconstruct_frames_wiener( float **x, int *N, int width, int overlap, int *nframes )
+{
+    *nframes = ceil(((float) *N-width)/(width-overlap)+1);
+    int padlen = width + (*nframes-1)*(width-overlap);
+
+    *x = (float *) realloc(*x, padlen*sizeof(float));
+    memset(*x+*N, 0, sizeof(float)*(padlen-*N));
+    fdither_absolute(*x+*N, padlen-*N, 1);
+    *N = padlen;
+
+    int step = width-overlap;
+    float *frames = MALLOC(*nframes*width*sizeof(float));
+
+    for ( int f = 0; f < *nframes; f++ )
+    {
+	for ( int n = 0; n < width; n++ )
+	{
+	    frames[f*width+n] = *(*x + f*step+n);
+	}
+    }
+
+    return frames;
+}
+
+
+float *fconstruct_frames( float **x, int *N, int width, int overlap, int *nframes )
+{
+    *nframes = ceil(((float) *N-width)/(width-overlap)+1);
+    int padlen = width + (*nframes-1)*(width-overlap);
+
+    *x = (float *) realloc(*x, padlen*sizeof(float));
+    memset(*x+*N, 0, sizeof(float)*(padlen-*N));
+    fdither(*x+*N, padlen-*N, 1);
+    *N = padlen;
+
+    int step = width-overlap;
+    float *frames = MALLOC(*nframes*width*sizeof(float));
+
+    for ( int f = 0; f < *nframes; f++ )
+    {
+	for ( int n = 0; n < width; n++ )
+	{
+	    frames[f*width+n] = *(*x + f*step+n);
+	}
+    }
+
+    return frames;
+}
+
+float* log_energies(short **x, int *N, int Fs, int normalize_energies, float silence_floor, float scaling_factor)
+{
+    int nframes = 0;
+    int fwin = DEFAULT_SHORTTERM_WINLEN_MS * Fs;
+    int fstep = DEFAULT_SHORTTERM_WINSHIFT_MS * Fs; 
+    int add_samp = 0;
+    short *frames = sconstruct_frames(x, N, fwin, fwin - fstep, &nframes, &add_samp);
+
+    float* energies = (float*) MALLOC (nframes * sizeof(float));
+    float e_max = -1e37;
+
+    // calculate energies and find maximum for normalizing
+    for (int f = 0; f < nframes; f++)
+    {
+	energies[f] = 0.;
+	for (int n = 0; n < fwin; n++)
+	{
+	    energies[f] += frames[f * fwin + n] * frames[f * fwin + n];
+	}
+	energies[f] = log10f(energies[f]);
+	if (energies[f] > e_max)
+	{
+	    e_max = energies[f];
+	}
+    }
+    float e_floor = e_max / exp10(silence_floor / 10.0f);
+    for (int f = 0; f < nframes; f++)
+    {
+	if (energies[f] < e_floor)
+	{
+	    energies[f] = e_floor;
+	}
+	if (normalize_energies == 1)
+	{
+	    energies[f] = energies[f] - e_max + 1.0f;
+	}
+	energies[f] *= scaling_factor;
+    }
+    FREE(frames);
+    return energies;
+}
+
+// function for implementing deltas
+float * deltas(float *x, int nframes, int ncep, int w)
+{
+
+    float *d = (float *) MALLOC(ncep*nframes*sizeof(float)); 
+    float *xpad = (float *) MALLOC(ncep*(nframes+w-1)*sizeof(float));
+    int hlen = floor(w/2);
+    for (int fr = 0;fr<(nframes+w-1);fr++)
+    {
+	for(int cep =0;cep<ncep;cep++)
+	{
+	    if (fr < hlen)
+	    {
+		xpad[fr*ncep+cep] = x[cep];
+	    }
+	    else if (fr >= (nframes+w-1)-hlen)
+	    {
+		xpad[fr*ncep+cep] = x[(nframes-1)*ncep + cep];
+	    }
+	    else
+	    {
+		xpad[fr*ncep+cep] = x[(fr-hlen)*ncep+cep];	
+	    }
+	}
+    }
+    for (int fr = w-1;fr<(nframes+w-1);fr++)
+    {
+	for(int cep =0;cep<ncep;cep++)
+	{
+	    float temp = 0;	
+	    for (int i = 0;i < w; i++)
+	    {
+		temp += xpad[(fr-i)*ncep+cep]*(hlen-i);	
+	    }
+	    d[(fr-w+1)*ncep+cep] = temp;
+	}
+    }
+    FREE(xpad);
+    return (d);
 }
 

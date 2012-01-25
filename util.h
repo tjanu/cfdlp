@@ -35,4 +35,16 @@ float toc(void);
 int str_to_int(char *str, char* argname);
 float str_to_float(char *str, char* argname);
 
+
+void sdither(short* x, int N, int scale);
+void fdither_absolute(float* x, int N, int scale);
+void fdither(float* x, int N, int scale);
+void sub_mean(short* x, int N);
+void pre_emphasize(short* x, int N, float coeff);
+short* sconstruct_frames(short** x, int* N, int width, int overlap, int* nframes, int* add_samp);
+float* fconstruct_frames(float** x, int* N, int width, int overlap, int* nframes);
+float* fconstruct_frames_wiener(float** x, int* N, int width, int overlap, int* nframes);
+float* log_energies(short** x, int* N, int Fs, int normalize_energies, float silence_floor, float scaling_factor);
+float* deltas(float* x, int nframes, int ncep, int w);
+
 #endif

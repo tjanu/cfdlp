@@ -84,13 +84,6 @@ typedef struct
      /* all filters are 1st order recursive low pass filter */
 } adl_struc;              
 
+void adapt_m(float * in, int N, float fsample, float * out);
 
 #endif /* _NRGL_H */
-
-
-
-
-
-
-
-

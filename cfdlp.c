@@ -3,6 +3,8 @@
 #include <config.h>
 #endif
 
+#include "cfdlp.h"
+
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -13,39 +15,14 @@
 #include "icsilog.h"
 #include <fftw3.h>
 #include "adapt.h"
+#include "windowing.h"
+#include "filterbanks.h"
 
 #if HAVE_LIBPTHREAD == 1
 #include "threadpool.h"
 #else
 #include "singlethread.h"
 #endif
-
-# define pi 3.14159265
-void adapt_m(float * in, int N, float fsample, float * out);
-
-/* 0 --> computing fdlpenv the fast way (directly choosing the required number
- * of fft points
- * 1 --> computing fdlpenv the slow way (rounding number of fft points to next
- * power of 2, interpolating for final envelope
- */
-#define FDLPENV_WITH_INTERP 0
-
-#define AXIS_BARK 0
-#define AXIS_MEL 1
-#define AXIS_LINEAR_MEL 2
-#define AXIS_LINEAR_BARK 3
-
-// finally get rid of all those magic numbers...
-#define DEFAULT_SHORTTERM_WINLEN_MS 0.025
-#define DEFAULT_SHORTTERM_WINSHIFT_MS 0.010
-#define DEFAULT_SHORTTERM_SHIFT_PERCENTAGE 0.4
-#define DEFAULT_FDLPWIN_SHIFT_MS 0.020
-#define FDLPWIN_SEC2SHORTTERMMULT_FACTOR 40
-#define DEFAULT_LONGTERM_TRAP_FRAMECTX 10
-#define DEFAULT_LONGTERM_WINLEN_MS 0.2
-
-#define DEFAULT_SHORTTERM_NCEPS 13
-#define DEFAULT_LONGTERM_NCEPS 14
 
 char *infile = NULL;
 char *outfile = NULL;
@@ -427,6 +404,231 @@ void usage()
 	    );
 }
 
+void parse_param(char* name, char* value)
+{
+    if ( strcmp(name, "v") == 0
+	    || strcmp(name, "verbose") == 0)
+    {
+	verbose = str_to_int(value, "verbose");
+    }
+    else if ( strcmp(name, "sr") == 0 )
+    {
+	Fs = str_to_int(value, "sr");
+	if (Fs != 8000 && Fs != 16000) {
+	    fatal("Unsupported sample rate! Only 8000 and 16000 are supported.");
+	}
+    }
+    else if ( strcmp(name, "pre-emphasis") == 0 )
+    {
+	preem_coeff = str_to_float(value, "pre-emphasis");
+	if (preem_coeff >= 1.0 || preem_coeff < 0.0)
+	{
+	    fatal("Pre-emphasis coefficient not in range 0 <= coeff < 1.");
+	}
+    }
+    else if ( strcmp(name, "use-energy") == 0 )
+    {
+	use_energy = str_to_int(value, "use-energy");
+    }
+    else if ( strcmp(name, "normalize-energy") == 0 )
+    {
+	energy_normalize = str_to_int(value, "normalize-energy");
+    }
+    else if ( strcmp(name, "scale-energy") == 0 )
+    {
+	energy_scale = str_to_float(value, "scale-energy");
+    }
+    else if ( strcmp(name, "silence-floor") == 0 )
+    {
+	energy_silence_floor = str_to_float(value, "silence-floor");
+    }
+    else if ( strcmp(name, "gn") == 0 )
+    {
+	do_gain_norm = str_to_int(value, "gn");
+    }
+    else if ( strcmp(name, "spec") == 0 
+	    || strcmp(name, "feat") == 0
+	    )
+    {
+	do_spec = str_to_int(value, "feat");
+	if (do_spec != 0 && do_spec != 1)
+	{
+	    if (do_spec == 2) {
+		do_spec = 1;
+		do_plp2 = 1;
+	    }
+	    else
+	    {
+		fprintf(stderr, "Error: feat: Unsupported feature type!\n");
+		usage();
+	    }
+	}
+    }
+    else if ( strcmp(name, "axis") == 0 )
+    {
+	if(strcmp(value, "bark") == 0)
+	{
+	    axis = AXIS_BARK;
+	}
+	else if (strcmp(value, "mel") == 0)
+	{
+	    axis = AXIS_MEL;
+	}
+	else if (strcmp(value, "linear-mel") == 0)
+	{
+	    axis = AXIS_LINEAR_MEL;
+	}
+	else if (strcmp(value, "linear-bark") == 0)
+	{
+	    axis = AXIS_LINEAR_BARK;
+	}
+	else
+	{
+	    fprintf(stderr, "unknown frequency axis scale: %s\n", value);
+	    usage();
+	}
+    }
+    else if ( strcmp(name, "pole-factor") == 0)
+    {
+	model_order_factor = str_to_float(value, "pole-factor");
+    }
+    else if ( strcmp(name, "specgram") == 0 )
+    {
+	specgrm = str_to_int(value, "specgram");
+    }
+    else if ( strcmp(name, "limit-range") == 0 )
+    {
+	limit_range = str_to_int(value, "limit-range");
+    }
+    else if ( strcmp(name, "limit-lower") == 0 )
+    {
+	limit_lower = str_to_float(value, "limit-lower");
+    }
+    else if ( strcmp(name, "limit-upper") == 0 )
+    {
+	limit_upper = str_to_float(value, "limit-upper");
+    }
+    else if ( strcmp(name, "apply-wiener") == 0 )
+    {
+	do_wiener = str_to_int(value, "apply-wiener");
+    }
+    else if ( strcmp(name, "wiener-alpha") == 0 )
+    {
+	wiener_alpha = str_to_float(value, "wiener-alpha");
+    }
+    else if ( strcmp(name, "fdplpwin") == 0)
+    {
+	fdplp_win_len_sec = str_to_float(value, "fdplpwin");
+    }
+    else if ( strcmp(name, "truncate-last") == 0)
+    {
+	truncate_last = str_to_int(value, "truncate-last");
+    }
+    else if ( strcmp(name, "skip-bands") == 0)
+    {
+	skip_bands = str_to_int(value, "skip-bands");
+    }
+    else if ( strcmp(name, "padding") == 0 )
+    {
+	padwin_ms = str_to_float(value, "padding");
+    }
+    else if ( strcmp(name, "speechchar") == 0)
+    {
+	speechchar = value[0];
+    }
+    else if ( strcmp(name, "nonspeechchar") == 0)
+    {
+	nspeechchar = value[0];
+    }
+    else if ( strcmp(name, "vad-grace") == 0)
+    {
+	vad_grace = str_to_int(value, "vad-grace");
+    }
+    else if ( strcmp(name, "nceps") == 0)
+    {
+	num_cepstral_coeffs = str_to_int(value, "nceps");
+    }
+    else if ( strcmp(name, "shortterm-mode") == 0)
+    {
+	int shortterm_mode = str_to_int(value, "shortterm-mode");
+	switch (shortterm_mode)
+	{
+	    case 0:
+		shortterm_do_delta = 0;
+		shortterm_do_ddelta = 0;
+		break;
+	    case 1:
+		shortterm_do_delta = 1;
+		shortterm_do_ddelta = 0;
+		break;
+	    case 2:
+		shortterm_do_delta = 0;
+		shortterm_do_ddelta = 1;
+		break;
+	    case 3:
+		shortterm_do_delta = 1;
+		shortterm_do_ddelta = 1;
+		break;
+	    default:
+		fprintf(stderr, "Unsupported shortterm-mode parameter!\n");
+		usage();
+	}
+    }
+    else if ( strcmp(name, "modulation-mode") == 0)
+    {
+	int modmode = str_to_int(value, "modulation-mode");
+	switch (modmode)
+	{
+	    case 0:
+		longterm_do_static = 1;
+		longterm_do_dynamic = 0;
+		break;
+	    case 1:
+		longterm_do_static = 0;
+		longterm_do_dynamic = 1;
+		break;
+	    case 2:
+		longterm_do_static = 1;
+		longterm_do_dynamic = 1;
+		break;
+	    default:
+		fprintf(stderr, "Error: Unsupported modulation-mode parameter!\n");
+		usage();
+	}
+    }
+    else if ( strcmp(name, "plp2-order") == 0 )
+    {
+	plp2_order = str_to_int(value, "plp2-order");
+    }
+    else if ( strcmp(name, "plp2-liftering") == 0 )
+    {
+	plp2_lift_coeff = str_to_float(value, "plp2-liftering");
+    }
+    else if ( strcmp(name, "downsampling-factor") == 0 )
+    {
+	factor = str_to_int(value, "downsampling-factor");
+    }
+    else if ( strcmp(name, "downsampling-sr") == 0 )
+    {
+	Fs1 = str_to_int(value, "downsampling-sr");
+    }
+    else if ( strcmp(name, "cepslifter") == 0 )
+    {
+	lift_coeff = str_to_float(value, "cepslifter");
+    }
+#if HAVE_LIBPTHREAD == 1
+    else if ( strcmp(name, "max-threads") == 0 )
+    {
+	max_num_threads = str_to_int(value, "max-threads");
+    }
+#endif
+    else
+    {
+	fprintf(stderr, "unknown parameter: %s\n", name);
+	usage();
+    }
+}
+
 void parse_conffile(const char* filename)
 {
     char *linebuf = (char*) MALLOC(2048 * sizeof(char));
@@ -552,228 +754,7 @@ void parse_conffile(const char* filename)
 	    fprintf(stderr, "Config file: Line %d malformed!\n", linecount);
 	    exit(EXIT_FAILURE);
 	}
-
-	if ( strcmp(name, "v") == 0
-		|| strcmp(name, "verbose") == 0)
-	{
-	    verbose = str_to_int(value, "verbose");
-	}
-	else if ( strcmp(name, "sr") == 0 )
-	{
-	    Fs = str_to_int(value, "sr");
-	    if (Fs != 8000 && Fs != 16000) {
-		fatal("Unsupported sample rate! Only 8000 and 16000 are supported.");
-	    }
-	}
-	else if ( strcmp(name, "pre-emphasis") == 0 )
-	{
-	    preem_coeff = str_to_float(value, "pre-emphasis");
-	    if (preem_coeff >= 1.0 || preem_coeff < 0.0)
-	    {
-		fatal("Pre-emphasis coefficient not in range 0 <= coeff < 1.");
-	    }
-	}
-	else if ( strcmp(name, "use-energy") == 0 )
-	{
-	    use_energy = str_to_int(value, "use-energy");
-	}
-	else if ( strcmp(name, "normalize-energy") == 0 )
-	{
-	    energy_normalize = str_to_int(value, "normalize-energy");
-	}
-	else if ( strcmp(name, "scale-energy") == 0 )
-	{
-	    energy_scale = str_to_float(value, "scale-energy");
-	}
-	else if ( strcmp(name, "silence-floor") == 0 )
-	{
-	    energy_silence_floor = str_to_float(value, "silence-floor");
-	}
-	else if ( strcmp(name, "gn") == 0 )
-	{
-	    do_gain_norm = str_to_int(value, "gn");
-	}
-	else if ( strcmp(name, "spec") == 0 
-		|| strcmp(name, "feat") == 0
-		)
-	{
-	    do_spec = str_to_int(value, "feat");
-	    if (do_spec != 0 && do_spec != 1)
-	    {
-		if (do_spec == 2) {
-		    do_spec = 1;
-		    do_plp2 = 1;
-		}
-		else
-		{
-		    fprintf(stderr, "Error: feat: Unsupported feature type!\n");
-		    usage();
-		}
-	    }
-	}
-	else if ( strcmp(name, "axis") == 0 )
-	{
-	    if(strcmp(value, "bark") == 0)
-	    {
-		axis = AXIS_BARK;
-	    }
-	    else if (strcmp(value, "mel") == 0)
-	    {
-		axis = AXIS_MEL;
-	    }
-	    else if (strcmp(value, "linear-mel") == 0)
-	    {
-		axis = AXIS_LINEAR_MEL;
-	    }
-	    else if (strcmp(value, "linear-bark") == 0)
-	    {
-		axis = AXIS_LINEAR_BARK;
-	    }
-	    else
-	    {
-		fprintf(stderr, "unknown frequency axis scale: %s\n", value);
-		usage();
-	    }
-	}
-	else if ( strcmp(name, "pole-factor") == 0)
-	{
-	    model_order_factor = str_to_float(value, "pole-factor");
-	}
-	else if ( strcmp(name, "specgram") == 0 )
-	{
-	    specgrm = str_to_int(value, "specgram");
-	}
-	else if ( strcmp(name, "limit-range") == 0 )
-	{
-	    limit_range = str_to_int(value, "limit-range");
-	}
-	else if ( strcmp(name, "limit-lower") == 0 )
-	{
-	    limit_lower = str_to_float(value, "limit-lower");
-	}
-	else if ( strcmp(name, "limit-upper") == 0 )
-	{
-	    limit_upper = str_to_float(value, "limit-upper");
-	}
-	else if ( strcmp(name, "apply-wiener") == 0 )
-	{
-	    do_wiener = str_to_int(value, "apply-wiener");
-	}
-	else if ( strcmp(name, "wiener-alpha") == 0 )
-	{
-	    wiener_alpha = str_to_float(value, "wiener-alpha");
-	}
-	else if ( strcmp(name, "fdplpwin") == 0)
-	{
-	    fdplp_win_len_sec = str_to_float(value, "fdplpwin");
-	}
-	else if ( strcmp(name, "truncate-last") == 0)
-	{
-	    truncate_last = str_to_int(value, "truncate-last");
-	}
-	else if ( strcmp(name, "skip-bands") == 0)
-	{
-	    skip_bands = str_to_int(value, "skip-bands");
-	}
-	else if ( strcmp(name, "padding") == 0 )
-	{
-	    padwin_ms = str_to_float(value, "padding");
-	}
-	else if ( strcmp(name, "speechchar") == 0)
-	{
-	    speechchar = value[0];
-	}
-	else if ( strcmp(name, "nonspeechchar") == 0)
-	{
-	    nspeechchar = value[0];
-	}
-	else if ( strcmp(name, "vad-grace") == 0)
-	{
-	    vad_grace = str_to_int(value, "vad-grace");
-	}
-	else if ( strcmp(name, "nceps") == 0)
-	{
-	    num_cepstral_coeffs = str_to_int(value, "nceps");
-	}
-	else if ( strcmp(name, "shortterm-mode") == 0)
-	{
-	    int shortterm_mode = str_to_int(value, "shortterm-mode");
-	    switch (shortterm_mode)
-	    {
-		case 0:
-		    shortterm_do_delta = 0;
-		    shortterm_do_ddelta = 0;
-		    break;
-		case 1:
-		    shortterm_do_delta = 1;
-		    shortterm_do_ddelta = 0;
-		    break;
-		case 2:
-		    shortterm_do_delta = 0;
-		    shortterm_do_ddelta = 1;
-		    break;
-		case 3:
-		    shortterm_do_delta = 1;
-		    shortterm_do_ddelta = 1;
-		    break;
-		default:
-		    fprintf(stderr, "Unsupported shortterm-mode parameter!\n");
-		    usage();
-	    }
-	}
-	else if ( strcmp(name, "modulation-mode") == 0)
-	{
-	    int modmode = str_to_int(value, "modulation-mode");
-	    switch (modmode)
-	    {
-		case 0:
-		    longterm_do_static = 1;
-		    longterm_do_dynamic = 0;
-		    break;
-		case 1:
-		    longterm_do_static = 0;
-		    longterm_do_dynamic = 1;
-		    break;
-		case 2:
-		    longterm_do_static = 1;
-		    longterm_do_dynamic = 1;
-		    break;
-		default:
-		    fprintf(stderr, "Error: Unsupported modulation-mode parameter!\n");
-		    usage();
-	    }
-	}
-	else if ( strcmp(name, "plp2-order") == 0 )
-	{
-	    plp2_order = str_to_int(value, "plp2-order");
-	}
-	else if ( strcmp(name, "plp2-liftering") == 0 )
-	{
-	    plp2_lift_coeff = str_to_float(value, "plp2-liftering");
-	}
-	else if ( strcmp(name, "downsampling-factor") == 0 )
-	{
-	    factor = str_to_int(value, "downsampling-factor");
-	}
-	else if ( strcmp(name, "downsampling-sr") == 0 )
-	{
-	    Fs1 = str_to_int(value, "downsampling-sr");
-	}
-	else if ( strcmp(name, "cepslifter") == 0 )
-	{
-	    lift_coeff = str_to_float(value, "cepslifter");
-	}
-#if HAVE_LIBPTHREAD == 1
-	else if ( strcmp(name, "max-threads") == 0 )
-	{
-	    max_num_threads = str_to_int(value, "max-threads");
-	}
-#endif
-	else
-	{
-	    fprintf(stderr, "unknown parameter in config file: <%s>\n", name);
-	    usage();
-	}
+	parse_param(name, value);
     }
     fclose(conf);
     FREE(linebuf_safe);
@@ -855,288 +836,6 @@ void parse_args(int argc, char **argv)
 		usage();
 	    }
 	}
-	else if ( strcmp(argv[i], "-sr") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		Fs = str_to_int(argv[++i], "-sr");
-		if (Fs != 8000 && Fs != 16000) {
-		    fatal("Unsupported sample rate! Only 8000 and 16000 are supported.");
-		}
-	    }
-	    else
-	    {
-		fprintf(stderr, "No sample rate given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-pre-emphasis") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		preem_coeff = str_to_float(argv[++i], "-pre-emphasis");
-		if (preem_coeff >= 1.0 || preem_coeff < 0.0)
-		{
-		    fatal("Pre-emphasis coefficient not in range 0 <= coeff < 1.");
-		}
-	    }
-	    else
-	    {
-		fprintf(stderr, "No pre-emphasis coefficient given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-use-energy") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		use_energy = str_to_int(argv[++i], "-use-energy");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No flag given for -use-energy option.\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-normalize-energy") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		energy_normalize = str_to_int(argv[++i], "-normalize-energy");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No flag given for normalize-energy option.\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-scale-energy") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		energy_scale = str_to_float(argv[++i], "-scale-energy");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No energy scaling factor given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-silence-floor") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		energy_silence_floor = str_to_float(argv[++i], "-silence-floor");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No silence floor ratio given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-gn") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		do_gain_norm = str_to_int(argv[++i], "-gn");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No gain normalization flag given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-spec") == 0 
-		|| strcmp(argv[i], "-feat") == 0
-		)
-	{
-	    if (i < argc - 1)
-	    {
-		do_spec = str_to_int(argv[++i], "-feat");
-		if (do_spec != 0 && do_spec != 1)
-		{
-		    if (do_spec == 2) {
-			do_spec = 1;
-			do_plp2 = 1;
-		    }
-		    else
-		    {
-			fprintf(stderr, "Error: -feat: Unsupported feature type!\n");
-			usage();
-		    }
-		}
-	    }
-	    else
-	    {
-		fprintf(stderr, "No feature type given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-axis") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		i++;
-		if(strcmp(argv[i], "bark") == 0)
-		{
-		    axis = AXIS_BARK;
-		}
-		else if (strcmp(argv[i], "mel") == 0)
-		{
-		    axis = AXIS_MEL;
-		}
-		else if (strcmp(argv[i], "linear-mel") == 0)
-		{
-		    axis = AXIS_LINEAR_MEL;
-		}
-		else if (strcmp(argv[i], "linear-bark") == 0)
-		{
-		    axis = AXIS_LINEAR_BARK;
-		}
-		else
-		{
-		    fprintf(stderr, "unknown frequency axis scale: %s\n", argv[i]);
-		    usage();
-		}
-	    }
-	    else
-	    {
-		fprintf(stderr, "No axis given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-pole-factor") == 0)
-	{
-	    if (i < argc - 1)
-	    {
-		model_order_factor = str_to_float(argv[++i], "-pole-factor");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No pole-factor argument given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-specgram") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		specgrm = str_to_int(argv[++i], "-specgram");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No spectrogram flag given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-limit-range") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		limit_range = str_to_int(argv[++i], "-limit-range");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No limit range flag given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-limit-lower") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		limit_lower = str_to_float(argv[++i], "-limit-lower");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No lower limit given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-limit-upper") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		limit_upper = str_to_float(argv[++i], "-limit-upper");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No upper limit given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-apply-wiener") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		do_wiener = str_to_int(argv[++i], "-apply-wiener");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No apply-wiener flag given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-wiener-alpha") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		wiener_alpha = str_to_float(argv[++i], "-wiener-alpha");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No wiener-alpha given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-fdplpwin") == 0)
-	{
-	    if (i < argc - 1)
-	    {
-		fdplp_win_len_sec = str_to_float(argv[++i], "-fdplpwin");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No fdplp window length given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-truncate-last") == 0)
-	{
-	    if (i < argc - 1)
-	    {
-		truncate_last = str_to_int(argv[++i], "-truncate-last");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No truncate-last flag given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-skip-bands") == 0)
-	{
-	    if (i < argc - 1)
-	    {
-		skip_bands = str_to_int(argv[++i], "-skip-bands");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No skip-bands flag given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-padding") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		padwin_ms = str_to_float(argv[++i], "-padding");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No argument to -padding option given!\n");
-		usage();
-	    }
-	}
 	else if ( strcmp(argv[i], "-vadfile") == 0)
 	{
 	    if (i < argc - 1 && argv[i+1][0] != '-')
@@ -1149,216 +848,44 @@ void parse_args(int argc, char **argv)
 		usage();
 	    }
 	}
-	else if ( strcmp(argv[i], "-speechchar") == 0)
-	{
-	    if (i < argc - 1)
-	    {
-		speechchar = argv[++i][0];
-	    }
-	    else
-	    {
-		fprintf(stderr, "No speech char given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-nonspeechchar") == 0)
-	{
-	    if (i < argc - 1)
-	    {
-		nspeechchar = argv[++i][0];
-	    }
-	    else
-	    {
-		fprintf(stderr, "No nonspeech char given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-vad-grace") == 0)
-	{
-	    if (i < argc - 1)
-	    {
-		vad_grace = str_to_int(argv[++i], "-vad-grace");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No vad grace given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-nceps") == 0)
-	{
-	    if (i < argc - 1)
-	    {
-		num_cepstral_coeffs = str_to_int(argv[++i], "-nceps");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No nceps given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-shortterm-mode") == 0)
-	{
-	    if (i < argc - 1)
-	    {
-		int shortterm_mode = str_to_int(argv[++i], "-shortterm-mode");
-		switch (shortterm_mode)
-		{
-		    case 0:
-			shortterm_do_delta = 0;
-			shortterm_do_ddelta = 0;
-			break;
-		    case 1:
-			shortterm_do_delta = 1;
-			shortterm_do_ddelta = 0;
-			break;
-		    case 2:
-			shortterm_do_delta = 0;
-			shortterm_do_ddelta = 1;
-			break;
-		    case 3:
-			shortterm_do_delta = 1;
-			shortterm_do_ddelta = 1;
-			break;
-		    default:
-			fprintf(stderr, "Unsupported shortterm-mode parameter!\n");
-			usage();
-		}
-	    }
-	    else
-	    {
-		fprintf(stderr, "No shortterm mode given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-modulation-mode") == 0)
-	{
-	    if (i < argc - 1)
-	    {
-		int modmode = str_to_int(argv[++i], "-modulation-mode");
-		switch (modmode)
-		{
-		    case 0:
-			longterm_do_static = 1;
-			longterm_do_dynamic = 0;
-			break;
-		    case 1:
-			longterm_do_static = 0;
-			longterm_do_dynamic = 1;
-			break;
-		    case 2:
-			longterm_do_static = 1;
-			longterm_do_dynamic = 1;
-			break;
-		    default:
-			fprintf(stderr, "Error: Unsupported modulation-mode parameter!\n");
-			usage();
-		}
-	    }
-	    else
-	    {
-		fprintf(stderr, "No modulation mode given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-plp2-order") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		plp2_order = str_to_int(argv[++i], "-plp2-order");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No -plp2-order given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-plp2-liftering") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		plp2_lift_coeff = str_to_float(argv[++i], "-plp2-liftering");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No -plp2-liftering given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-downsampling-factor") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		factor = str_to_int(argv[++i], "-downsampling-factor");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No downsampling factor given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-downsampling-sr") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		Fs1 = str_to_int(argv[++i], "-downsampling-sr");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No downsampling sample rate given!\n");
-		usage();
-	    }
-	}
-	else if ( strcmp(argv[i], "-cepslifter") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		lift_coeff = str_to_float(argv[++i], "-cepslifter");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No argument supplied for option -cepslifter!\n");
-		usage();
-	    }
-	}
-#if HAVE_LIBPTHREAD == 1
-	else if ( strcmp(argv[i], "-max-threads") == 0 )
-	{
-	    if (i < argc - 1)
-	    {
-		max_num_threads = str_to_int(argv[++i], "-max-threads");
-	    }
-	    else
-	    {
-		fprintf(stderr, "No maximum number of threads given!\n");
-		usage();
-	    }
-	}
-#endif
 	else
 	{
-	    fprintf(stderr, "unknown arg: %s\n", argv[i]);
-	    usage();
+	    if (i < argc - 1)
+	    {
+		parse_param(argv[i]+1, argv[i+1]);
+		i++;
+	    }
+	    else
+	    {
+		fprintf(stderr, "No argument given to parameter %s!\n", argv[i]);
+		usage();
+	    }
 	}
     }
 
+    // Checking of some parameters/boundaries
+    
+    // we need an input and some sort of output file
     if ( !infile || !(outfile || printfile) )
     {
 	fprintf(stderr, "\nERROR: infile (-i) and at least one of outfile (-o) or printfile (-print) args is required\n");
 	usage();
     }
 
+    // linear is only possible for short-term/plp2
     if ((axis == AXIS_LINEAR_MEL || axis == AXIS_LINEAR_BARK) && !do_spec)
     {
 	fprintf(stderr, "Linear frequency axis is only available for short-term (spectral) features.\n");
 	usage();
     }
 
+    // for the spectrogram we have to pretend to create short-term features
     if (specgrm)
     {
 	do_spec = 1;
     }
 
+    // if this wasn't given we have to set it to the defaults
     if (wiener_alpha < 0.0)
     {
 	if (do_spec)
@@ -1377,6 +904,7 @@ void parse_args(int argc, char **argv)
 	usage();
     }
 
+    // set to defaults if not given
     if (num_cepstral_coeffs == -1)
     {
 	num_cepstral_coeffs = (do_spec == 0 ? DEFAULT_LONGTERM_NCEPS : DEFAULT_SHORTTERM_NCEPS);
@@ -1386,6 +914,7 @@ void parse_args(int argc, char **argv)
 	plp2_order = num_cepstral_coeffs - 1;
     }
 
+    // if only downsampling-sr is given, it is used, otherwise factor always "wins"
     if (factor < 0 && Fs1 > 0)
     {
 	factor = Fs / Fs1;
@@ -1411,6 +940,7 @@ void parse_args(int argc, char **argv)
 	usage();
     }
 
+    // also, set to defaults if not given
     if (model_order_factor <= 0.)
     {
 	switch (axis)
@@ -1432,423 +962,6 @@ void parse_args(int argc, char **argv)
     {
 	fprintf(stderr, "Limits for DCT spectrum limitation are out of bounds (one of them < 0 or lower >= upper)!\n");
 	usage();
-    }
-}
-
-void sdither( short *x, int N, int scale ) 
-{
-    for ( int i = 0; i < N; i++ )
-    {
-	float r = ((float) rand())/RAND_MAX;
-	x[i] += round(scale*(2*r-1));
-    }
-}
-
-void fdither_absolute( float *x, int N, int scale ) 
-{
-    for ( int i = 0; i < N; i++ )
-    {
-	float r = ((float) rand())/RAND_MAX;
-	x[i] += fabs(round(scale*2*r-1));
-    }
-}
-
-void fdither( float *x, int N, int scale ) 
-{
-    for ( int i = 0; i < N; i++ )
-    {
-	float r = ((float) rand())/RAND_MAX;
-	x[i] += round(scale*2*r-1);
-    }
-}
-
-void sub_mean( short *x, int N ) 
-{
-    float sum = 0.;
-    for ( int i = 0; i < N; i++ )
-    {
-	sum += x[i];
-    }
-
-    short mean = round(sum/N);
-
-    for ( int i = 0; i < N; i++ )
-    {
-	x[i] -= mean;
-    }
-}
-
-void pre_emphasize(short *x, int N, float coeff)
-{
-    if (!(coeff >= 0.0 && coeff < 1.0))
-    {
-	fprintf(stderr, "WARNING: Not applying pre-emphasis: coefficient (%g) not in range 0 <= coefficient < 1.\n", coeff);
-	return;
-    }
-    if (coeff > 0.0)
-    { // actually do something
-	for (int i = 1; i < N; i++) { // 1 --> cannot pre-emphasize first sample
-	    x[i] = x[i] - coeff * x[i-1];
-	}
-    }
-}
-
-short *sconstruct_frames( short **x, int *N, int width, int overlap, int *nframes, int *add_samp)
-{
-    *nframes = ceil(((float) *N-width)/(width-overlap)+1);
-    int padlen = width + (*nframes-1)*(width-overlap);
-    *add_samp = padlen - *N;
-
-    *x = (short *) realloc(*x, padlen*sizeof(short));
-    memset(*x+*N, 0, sizeof(short)*(padlen-*N));
-    sdither(*x+*N, padlen-*N, 1);
-    *N = padlen;
-
-    int step = width-overlap;
-    short *frames = MALLOC(*nframes*width*sizeof(short));
-
-    for ( int f = 0; f < *nframes; f++ )
-    {
-	for ( int n = 0; n < width; n++ )
-	{
-	    frames[f*width+n] = *(*x + f*step+n);
-	}
-    }
-
-    return frames;
-}
-
-float *fconstruct_frames_wiener( float **x, int *N, int width, int overlap, int *nframes )
-{
-    *nframes = ceil(((float) *N-width)/(width-overlap)+1);
-    int padlen = width + (*nframes-1)*(width-overlap);
-
-    *x = (float *) realloc(*x, padlen*sizeof(float));
-    memset(*x+*N, 0, sizeof(float)*(padlen-*N));
-    fdither_absolute(*x+*N, padlen-*N, 1);
-    *N = padlen;
-
-    int step = width-overlap;
-    float *frames = MALLOC(*nframes*width*sizeof(float));
-
-    for ( int f = 0; f < *nframes; f++ )
-    {
-	for ( int n = 0; n < width; n++ )
-	{
-	    frames[f*width+n] = *(*x + f*step+n);
-	}
-    }
-
-    return frames;
-}
-
-
-float *fconstruct_frames( float **x, int *N, int width, int overlap, int *nframes )
-{
-    *nframes = ceil(((float) *N-width)/(width-overlap)+1);
-    int padlen = width + (*nframes-1)*(width-overlap);
-
-    *x = (float *) realloc(*x, padlen*sizeof(float));
-    memset(*x+*N, 0, sizeof(float)*(padlen-*N));
-    fdither(*x+*N, padlen-*N, 1);
-    *N = padlen;
-
-    int step = width-overlap;
-    float *frames = MALLOC(*nframes*width*sizeof(float));
-
-    for ( int f = 0; f < *nframes; f++ )
-    {
-	for ( int n = 0; n < width; n++ )
-	{
-	    frames[f*width+n] = *(*x + f*step+n);
-	}
-    }
-
-    return frames;
-}
-
-float* log_energies(short **x, int *N, int Fs, int normalize_energies, float silence_floor, float scaling_factor)
-{
-    int nframes = 0;
-    int fwin = DEFAULT_SHORTTERM_WINLEN_MS * Fs;
-    int fstep = DEFAULT_SHORTTERM_WINSHIFT_MS * Fs; 
-    int add_samp = 0;
-    short *frames = sconstruct_frames(x, N, fwin, fwin - fstep, &nframes, &add_samp);
-
-    float* energies = (float*) MALLOC (nframes * sizeof(float));
-    float e_max = -1e37;
-
-    // calculate energies and find maximum for normalizing
-    for (int f = 0; f < nframes; f++)
-    {
-	energies[f] = 0.;
-	for (int n = 0; n < fwin; n++)
-	{
-	    energies[f] += frames[f * fwin + n] * frames[f * fwin + n];
-	}
-	energies[f] = log10f(energies[f]);
-	if (energies[f] > e_max)
-	{
-	    e_max = energies[f];
-	}
-    }
-    float e_floor = e_max / exp10(silence_floor / 10.0f);
-    for (int f = 0; f < nframes; f++)
-    {
-	if (energies[f] < e_floor)
-	{
-	    energies[f] = e_floor;
-	}
-	if (normalize_energies == 1)
-	{
-	    energies[f] = energies[f] - e_max + 1.0f;
-	}
-	energies[f] *= scaling_factor;
-    }
-    FREE(frames);
-    return energies;
-}
-
-// Function to implement generalized hamming window
-float * general_hamming(int N, float alpha)
-{
-    int half; 
-    float temp;
-    float *x = (float *) MALLOC( N*sizeof(float) );  
-    if (N % 2)
-	half = (N+1)/2;
-    else
-	half = N/2;
-
-    for (int i =0; i<N; i++)
-    {
-
-	if (i <= half -1)
-	{
-	    temp = ((float) i)/(N-1);
-	    x[i] = alpha - (1 - alpha)*cos(2*pi*temp);
-	}
-	else
-	{
-	    x[i] = x[N-1-i];
-	}
-    }
-
-    return x;
-}
-
-// Function to implement the hann window
-float * hann(int N)
-{
-    float *x  = (float *) MALLOC(N * sizeof(float) );
-    for (int i = 0; i < N+2; i++) {
-	if (i > 0 && i < N + 1) { // matlab has no zeroes at the beginning/end for hanning, only for hann (?!)
-	    float temp = ((float)i) / (N+1);
-	    x[i-1] = 0.5 * (1. - cos(2 * pi * temp));
-	}
-    }
-    return x;
-}
-
-// Function to implement Hamming Window
-float * hamming(int N)
-{
-    return general_hamming(N, 0.54);
-}
-
-// function for implementing deltas
-float * deltas(float *x, int nframes, int ncep, int w)
-{
-
-    float *d = (float *) MALLOC(ncep*nframes*sizeof(float)); 
-    float *xpad = (float *) MALLOC(ncep*(nframes+w-1)*sizeof(float));
-    int hlen = floor(w/2);
-    for (int fr = 0;fr<(nframes+w-1);fr++)
-    {
-	for(int cep =0;cep<ncep;cep++)
-	{
-	    if (fr < hlen)
-	    {
-		xpad[fr*ncep+cep] = x[cep];
-	    }
-	    else if (fr >= (nframes+w-1)-hlen)
-	    {
-		xpad[fr*ncep+cep] = x[(nframes-1)*ncep + cep];
-	    }
-	    else
-	    {
-		xpad[fr*ncep+cep] = x[(fr-hlen)*ncep+cep];	
-	    }
-	}
-    }
-    for (int fr = w-1;fr<(nframes+w-1);fr++)
-    {
-	for(int cep =0;cep<ncep;cep++)
-	{
-	    float temp = 0;	
-	    for (int i = 0;i < w; i++)
-	    {
-		temp += xpad[(fr-i)*ncep+cep]*(hlen-i);	
-	    }
-	    d[(fr-w+1)*ncep+cep] = temp;
-	}
-    }
-    FREE(xpad);
-    return (d);
-
-}
-
-float hz2bark( float hz )
-{
-    return 6 * asinhf(hz/600);
-}
-
-float hz2mel( float hz )
-{
-    float f_0 = 0; // 133.33333;
-    float f_sp = 200/3; // 66.66667;
-    float brkfrq = 1000;
-    float brkpt  = (brkfrq - f_0)/f_sp;  
-    float z;  
-    float logstep = exp(log(6.4)/27);
-
-    // fill in parts separately
-    if (hz < brkfrq)
-    {
-	z = (hz - f_0)/f_sp;
-    }
-    else
-    {
-	z  = brkpt+((log(hz/brkfrq))/log(logstep));
-    }
-
-    return z; 
-}
-
-float mel2hz(float mel)
-{
-  float f_0 = 0;
-  float f_sp = 200 / 3;
-  float brkfrq = 1000;
-  float brkpt = (brkfrq - f_0)/f_sp;
-  float z;
-  float logstep = exp(log(6.4)/27);
-
-  if (mel < brkpt)
-  {
-      z = f_0 + f_sp * mel;
-  }
-  else
-  {
-      z = brkfrq * exp(log(logstep) * (mel - brkpt));
-  }
-  return z;
-}
-
-void barkweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int *nbands)
-{
-    // bark per filt
-    float nyqbark = hz2bark(Fs/2);
-    float step_barks = nyqbark/(*nbands - 1);
-    float *binbarks = (float *) MALLOC(nfreqs*sizeof(float));
-
-    // Bark frequency of every bin in FFT
-    for ( int i = 0; i < nfreqs; i++ )
-    {
-	binbarks[i] = hz2bark(((float)i*(Fs/2))/(nfreqs-1));
-    }
-
-    for ( int i = 0; i < *nbands; i++ )
-    {
-	float f_bark_mid = i*step_barks;
-	for ( int j = 0; j < nfreqs; j++ )
-	{
-	    wts[i*nfreqs+j] = exp(-0.5*pow(binbarks[j]-f_bark_mid,2));
-	}
-    }
-
-    // compute frequency range where each filter exceeds dB threshold
-    float lin = pow(10,-dB/20);
-
-    for ( int i = 0; i < *nbands; i++ )
-    {
-	int j = 0;
-	while ( wts[i*nfreqs+(j++)] < lin );
-	indices[i*2] = j-1;
-	j = nfreqs-1;
-	while ( wts[i*nfreqs+(j--)] < lin );
-	indices[i*2+1] = j+1;
-    }
-
-    FREE(binbarks);
-}
-
-void melweights(int nfreqs, int Fs, float dB, float *wts, int *indices, int *nbands)
-{
-    float nyqmel = hz2mel(Fs/2);
-    float step_mels = nyqmel/(*nbands - 1);
-    float *binmels = (float *) MALLOC(nfreqs*sizeof(float));
-
-    for ( int i = 0; i < nfreqs; i++ )
-    {
-	binmels[i] = hz2mel(((float)i*(Fs/2))/(nfreqs-1));
-    }
-
-    for ( int i = 0; i < *nbands; i++ )
-    {
-	float f_mel_mid = i*step_mels;
-	for ( int j = 0; j < nfreqs; j++ )
-	{
-	    wts[i*nfreqs+j] = exp(-0.5*pow(binmels[j]-f_mel_mid,2));
-	}
-    }
-
-    float lin = pow(10,-dB/20);
-
-    for ( int i = 0; i < *nbands; i++ )
-    {
-	int j = 0;
-	while ( wts[i*nfreqs+(j++)] < lin );
-	indices[i*2] = j-1;
-	j = nfreqs-1;
-	while ( wts[i*nfreqs+(j--)] < lin );
-	indices[i*2+1] = j+1;
-    }
-
-    FREE(binmels);
-}
-
-void linweights(int nfreqs, int Fs, float dB, float **wts, int **indices, int *nbands)
-{
-    int whop = (int)roundf((float)nfreqs / ((float)(*nbands) + 3.5));
-    int wlen = (int)roundf(2.5 * (float)whop);
-
-    int reqbands = ceil(((float)nfreqs-wlen)/(whop + 1));
-    *wts = (float *)realloc(*wts, reqbands * nfreqs * sizeof(float));
-    *indices = (int *)realloc(*indices, reqbands * 2 * sizeof(int));
-
-    *nbands = reqbands;
-
-    for(int i = 0; i < *nbands; i++)
-    {
-	for(int j = 0; j < nfreqs; j++)
-	{
-	    (*wts)[i * nfreqs + j] = 1.;
-	}
-	(*indices)[i*2] = i * whop;
-	(*indices)[i * 2 + 1] = i * whop + wlen;
-    }
-
-    if ((*indices)[(*nbands - 1) * 2 + 1] > nfreqs)
-    {
-	(*indices)[(*nbands - 2) * 2 + 1] = nfreqs;
-	(*indices)[(*nbands - 1) * 2] = 0;
-	(*indices)[(*nbands - 1) * 2 + 1] = 0;
-	*nbands = *nbands - 1;
-    }
-    else if ((*indices)[(*nbands - 1) * 2 + 1] < nfreqs)
-    {
-	(*indices)[(*nbands - 1) * 2 + 1] = nfreqs;
     }
 }
 
