@@ -23,9 +23,12 @@ set(libs ${libs} ${LibRT})
 
 find_library(LibPthread pthread)
 if (NOT ${LibPthread} STREQUAL "LibPthread-NOTFOUND")
+    set(srcs ${srcs} threadpool.c)
     set(libs ${libs} ${LibPthread})
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -pthread")
     add_definitions(-DHAVE_LIBPTHREAD=1)
+else()
+    set(srcs ${srcs} singlethread.c)
 endif()
 
 find_package(fftw3 QUIET)

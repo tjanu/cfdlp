@@ -17,8 +17,9 @@
 #include "adapt.h"
 
 #if HAVE_LIBPTHREAD == 1
-#include <pthread.h>
-#include <time.h>
+#include "threadpool.h"
+#else
+#include "singlethread.h"
 #endif
 
 # define pi 3.14159265
@@ -135,28 +136,10 @@ complex** fdlpenv_output_buffers = NULL;
 
 // Multithreading
 int max_num_threads = 1;
-struct thread_info {
-#if HAVE_LIBPTHREAD == 1
-    pthread_t thread_id;
-#endif
-    void* (*threadfunc)(void* arg);
-    void* thread_arg;
-};
-
-#if HAVE_LIBPTHREAD == 1
-struct running_thread {
-    pthread_t* thread_id;
-    struct running_thread* next;
-};
-#endif
 
 struct thread_info* band_threads = NULL;
-#if HAVE_LIBPTHREAD == 1
-pthread_mutex_t fftw_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_mutex_t tpool_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t tpool_cond = PTHREAD_COND_INITIALIZER;
-pthread_mutex_t adapt_mutex = PTHREAD_MUTEX_INITIALIZER;
-#endif
+cfdlp_mutex_t fftw_mutex  = CFDLP_MUTEX_INITIALIZER;
+cfdlp_mutex_t adapt_mutex = CFDLP_MUTEX_INITIALIZER;
 
 struct lpc_info {
     double* y;
@@ -195,105 +178,6 @@ struct fdlpenv_info {
     float* fhamm;
 };
 
-void run_threads(struct thread_info* threads, int numthreads)
-{
-    int i = 0;
-    int curr_num_threads = 0;
-#if HAVE_LIBPTHREAD == 1
-    struct running_thread* running_threads = NULL;
-    struct timespec ts;
-#endif
-    //fprintf(stderr, "Got %d jobs to run with a maximum number of %d threads\n", numthreads, max_num_threads);
-    while (i < numthreads)
-    {
-#if HAVE_LIBPTHREAD == 1
-	//fprintf(stderr, "Scheduling job %d, %d/%d threads currently running\n", i, curr_num_threads, max_num_threads);
-	if (max_num_threads < 0 || curr_num_threads < max_num_threads)
-	{
-	    //fprintf(stderr, "starting job\n");
-	    pthread_create(&threads[i].thread_id, NULL, threads[i].threadfunc, threads[i].thread_arg);
-	    struct running_thread* new_runner = (struct running_thread*) MALLOC(sizeof(struct running_thread));
-	    new_runner->thread_id = &threads[i].thread_id;
-	    new_runner->next = NULL;
-	    struct running_thread* list_end = running_threads;
-	    if (list_end == NULL)
-	    {
-		running_threads = new_runner;
-	    }
-	    else
-	    {
-		while (list_end != NULL && list_end->next != NULL)
-		{
-		    list_end = list_end->next;
-		}
-		list_end->next = new_runner;
-	    }
-	    curr_num_threads++;
-	    i++;
-	}
-	// clean up running thread list in case anything is already finished
-	struct running_thread* last = NULL;
-	//fprintf(stderr, "Cleaning up running jobs...\n");
-	pthread_mutex_lock(&tpool_mutex);
-	if (max_num_threads > 0 && curr_num_threads >= max_num_threads)
-	{
-	    clock_gettime(CLOCK_REALTIME, &ts);
-	    ts.tv_nsec += 5000000; // half a second
-	    if (ts.tv_nsec >= 1000000000)
-	    {
-		int nsecs = ts.tv_nsec / 1000000000;
-		ts.tv_sec += nsecs;
-		ts.tv_nsec -= nsecs * 1000000000;
-	    }
-	    pthread_cond_timedwait(&tpool_cond, &tpool_mutex, &ts);
-	}
-	for (struct running_thread* current = running_threads; current != NULL; )
-	{
-	    int errcode = pthread_tryjoin_np(*(current->thread_id), NULL);
-	    if (errcode == 0)
-	    {
-		// get it out of the list
-		if (last == NULL)
-		{
-		    // first in the list
-		    running_threads = current->next;
-		    FREE(current);
-		    current = running_threads;
-		}
-		else
-		{
-		    // have to get it out of the list...
-		    struct running_thread* tmp = current;
-		    last->next = current->next;
-		    current = current->next;
-		    FREE(tmp);
-		}
-		curr_num_threads--;
-	    }
-	    else
-	    {
-		last = current;
-		current = current->next;
-	    }
-	}
-	pthread_mutex_unlock(&tpool_mutex);
-#else
-	threads[i].threadfunc(threads[i].thread_arg);
-	i++;
-#endif
-    }
-#if HAVE_LIBPTHREAD == 1
-    // wait for all threads to finish
-    while (running_threads != NULL)
-    {
-	pthread_join(*(running_threads->thread_id), NULL);
-	struct running_thread* tmp = running_threads;
-	running_threads = running_threads->next;
-	FREE(tmp);
-    }
-#endif
-}
-
 void cleanup_fdlpenv_plans()
 {
     for (int i = 0; i < num_fdlpenv_plans; i++)
@@ -302,13 +186,9 @@ void cleanup_fdlpenv_plans()
 	{
 	    if (fdlpenv_plans[i] != NULL)
 	    {
-#if HAVE_LIBPTHREAD == 1
-		pthread_mutex_lock(&fftw_mutex);
-#endif
+		lock_mutex(&fftw_mutex);
 		fftw_destroy_plan(fdlpenv_plans[i]);
-#if HAVE_LIBPTHREAD == 1
-		pthread_mutex_unlock(&fftw_mutex);
-#endif
+		unlock_mutex(&fftw_mutex);
 	    }
 	}
 	if (fdlpenv_input_buffers != NULL)
@@ -359,13 +239,9 @@ void cleanup_lpc_plans()
 	{
 	    if (lpc_r2c_plans[i] != NULL)
 	    {
-#if HAVE_LIBPTHREAD == 1
-		pthread_mutex_lock(&fftw_mutex);
-#endif
+		lock_mutex(&fftw_mutex);
 		fftw_destroy_plan(lpc_r2c_plans[i]);
-#if HAVE_LIBPTHREAD == 1
-		pthread_mutex_unlock(&fftw_mutex);
-#endif
+		unlock_mutex(&fftw_mutex);
 	    }
 	}
 	if (lpc_r2c_input_buffers != NULL)
@@ -388,13 +264,9 @@ void cleanup_lpc_plans()
 	{
 	    if (lpc_c2r_plans[i] != NULL)
 	    {
-#if HAVE_LIBPTHREAD == 1
-		pthread_mutex_lock(&fftw_mutex);
-#endif
+		lock_mutex(&fftw_mutex);
 		fftw_destroy_plan(lpc_c2r_plans[i]);
-#if HAVE_LIBPTHREAD == 1
-		pthread_mutex_unlock(&fftw_mutex);
-#endif
+		unlock_mutex(&fftw_mutex);
 	    }
 	}
 	if (lpc_c2r_input_buffers != NULL)
@@ -461,13 +333,9 @@ void cleanup_fftw_plans()
 {
     if (dct_plan != NULL)
     {
-#if HAVE_LIBPTHREAD == 1
-	pthread_mutex_lock(&fftw_mutex);
-#endif
+	lock_mutex(&fftw_mutex);
 	fftw_destroy_plan(dct_plan);
-#if HAVE_LIBPTHREAD == 1
-	pthread_mutex_unlock(&fftw_mutex);
-#endif
+	unlock_mutex(&fftw_mutex);
     }
     if (dct_buffer != NULL)
     {
@@ -634,9 +502,10 @@ void parse_conffile(const char* filename)
     {
 	linecount++;
 	int linelen = strlen(linebuf);
-	for (int i = linelen - 1; i > 0; i--)
+	//fprintf(stderr, "Line %d, len %d: <%s>\n", linecount, linelen, linebuf);
+	for (int i = linelen - 1; i >= 0; i--)
 	{
-	    if (linebuf[i] == ' ' || linebuf[i] == '\n' || linebuf[i] == '\r')
+	    if (linebuf[i] == ' ' || linebuf[i] == '\n' || linebuf[i] == '\r' || linebuf[i] == '\t')
 	    {
 		linebuf[i] = '\0';
 	    }
@@ -646,10 +515,11 @@ void parse_conffile(const char* filename)
 	    }
 	}
 	linelen = strlen(linebuf);
+	//fprintf(stderr, "Cleaned up from right: len %d, str <%s>\n", linelen, linebuf);
 	int wscnt = 0;
 	for (int i = 0; i < linelen; i++)
 	{
-	    if (linebuf[i] == ' ')
+	    if (linebuf[i] == ' ' || linebuf[i] == '\t')
 	    {
 		wscnt++;
 	    }
@@ -660,6 +530,7 @@ void parse_conffile(const char* filename)
 	}
 	linebuf = linebuf + wscnt;
 	linelen = strlen(linebuf);
+	//fprintf(stderr, "Cleaned up from left: len %d, str <%s>\n", linelen, linebuf);
 	if (linelen <= 0 || linebuf[0] == '#')
 	{
 	    continue;
@@ -673,18 +544,22 @@ void parse_conffile(const char* filename)
 	    {
 		linebuf[i] = '\0';
 		int j = i - 1;
-		for (; j > 0; j--)
+		for (; j >= 0; j--)
 		{
-		    if (linebuf[j] != ' ')
+		    if (linebuf[j] == ' ' || linebuf[j] == '\t')
+		    {
+		    linebuf[j] = '\0';
+		    }
+		    else
 		    {
 			break;
 		    }
-		    linebuf[j] = '\0';
 		}
 		linelen = j;
 		break;
 	    }
 	}
+	//fprintf(stderr, "Cleaned up comments in line: len %d, str <%s>\n", linelen, linebuf);
 	for (int i = 0; i < linelen; i++)
 	{
 	    if (linebuf[i] == '=')
@@ -692,23 +567,39 @@ void parse_conffile(const char* filename)
 		eqpos = i;
 		linebuf[i] = '\0';
 		int j = i - 1;
-		for (; j > 0; j--)
+		//fprintf(stderr, "Found = at pos %d\n", eqpos);
+		for (; j >= 0; j--)
 		{
-		    if (linebuf[j] != ' ')
+		    if (linebuf[j] == ' ' || linebuf[j] == '\t')
 		    {
+			linebuf[j] = '\0';
+		    }
+		    else {
+			//fprintf(stderr, "Stopping cleanup left of = at pos %d\n", j);
 			break;
 		    }
-		    linebuf[j] = '\0';
 		}
 		for (j = i+1; j < linelen; j++)
 		{
-		    if (linebuf[j] != ' ')
+		    if (linebuf[j] == ' ' || linebuf[j] == '\t')
 		    {
+			linebuf[j] = '\0';
+		    }
+		    else
+		    {
+			//fprintf(stderr, "Stopping cleanup right of = at pos %d\n", j);
 			break;
 		    }
-		    linebuf[j] = '\0';
 		}
-		value = &(linebuf[j]);
+		if (j <= linelen - 1)
+		{
+		    value = &(linebuf[j]);
+		}
+		else
+		{
+		    fprintf(stderr, "No value on config file line %d (Parameter <%s>)\n", linecount, name);
+		    exit(EXIT_FAILURE);
+		}
 		break;
 	    }
 	}
@@ -938,7 +829,7 @@ void parse_conffile(const char* filename)
 #endif
 	else
 	{
-	    fprintf(stderr, "unknown arg: %s\n", name);
+	    fprintf(stderr, "unknown parameter in config file: <%s>\n", name);
 	    usage();
 	}
     }
@@ -1734,13 +1625,13 @@ float *fconstruct_frames( float **x, int *N, int width, int overlap, int *nframe
     return frames;
 }
 
-float* log_energies(short *x, int N, int Fs, int normalize_energies, float silence_floor, float scaling_factor)
+float* log_energies(short **x, int *N, int Fs, int normalize_energies, float silence_floor, float scaling_factor)
 {
     int nframes = 0;
     int fwin = DEFAULT_SHORTTERM_WINLEN_MS * Fs;
     int fstep = DEFAULT_SHORTTERM_WINSHIFT_MS * Fs; 
     int add_samp = 0;
-    short *frames = sconstruct_frames(&x, &N, fwin, fwin - fstep, &nframes, &add_samp);
+    short *frames = sconstruct_frames(x, N, fwin, fwin - fstep, &nframes, &add_samp);
 
     float* energies = (float*) MALLOC (nframes * sizeof(float));
     float e_max = -1e37;
@@ -2085,13 +1976,9 @@ void lpc( double *y, int len, int order, int compr, float *poles, int myband )
 	lpc_r2c_plan_sizes[myband] = N;
 	if (lpc_r2c_plans[myband] != NULL)
 	{
-#if HAVE_LIBPTHREAD == 1
-	    pthread_mutex_lock(&fftw_mutex);
-#endif
+	    lock_mutex(&fftw_mutex);
 	    fftw_destroy_plan(lpc_r2c_plans[myband]);
-#if HAVE_LIBPTHREAD == 1
-	    pthread_mutex_unlock(&fftw_mutex);
-#endif
+	    unlock_mutex(&fftw_mutex);
 	    lpc_r2c_plans[myband] = NULL;
 	}
 	if (lpc_r2c_input_buffers[myband] != NULL)
@@ -2129,17 +2016,13 @@ void lpc( double *y, int len, int order, int compr, float *poles, int myband )
 
     if (lpc_r2c_plans[myband] == NULL)
     {
-#if HAVE_LIBPTHREAD == 1
-	pthread_mutex_lock(&fftw_mutex);
-#endif
+	lock_mutex(&fftw_mutex);
 	lpc_r2c_plans[myband] = fftw_plan_dft_r2c_1d(
 		lpc_r2c_plan_sizes[myband],
 		lpc_r2c_input_buffers[myband],
 		lpc_r2c_output_buffers[myband],
 		FFTW_ESTIMATE);
-#if HAVE_LIBPTHREAD == 1
-	pthread_mutex_unlock(&fftw_mutex);
-#endif
+	unlock_mutex(&fftw_mutex);
     }
 
     if (lpc_c2r_output_buffers[myband] == NULL)
@@ -2148,17 +2031,13 @@ void lpc( double *y, int len, int order, int compr, float *poles, int myband )
     }
     if (lpc_c2r_plans[myband] == NULL)
     {
-#if HAVE_LIBPTHREAD == 1
-	pthread_mutex_lock(&fftw_mutex);
-#endif
+	lock_mutex(&fftw_mutex);
 	lpc_c2r_plans[myband] = fftw_plan_dft_c2r_1d(
 		lpc_r2c_plan_sizes[myband],
 		lpc_r2c_output_buffers[myband],
 		lpc_c2r_output_buffers[myband],
 		FFTW_ESTIMATE);
-#if HAVE_LIBPTHREAD == 1
-	pthread_mutex_unlock(&fftw_mutex);
-#endif
+	unlock_mutex(&fftw_mutex);
     }
 
     for ( int n = 0; n < N; n++ )
@@ -2203,13 +2082,9 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 	lpc_r2c_plan_sizes[myband] = N;
 	if (lpc_r2c_plans[myband] != NULL)
 	{
-#if HAVE_LIBPTHREAD == 1
-	    pthread_mutex_lock(&fftw_mutex);
-#endif
+	    lock_mutex(&fftw_mutex);
 	    fftw_destroy_plan(lpc_r2c_plans[myband]);
-#if HAVE_LIBPTHREAD == 1
-	    pthread_mutex_unlock(&fftw_mutex);
-#endif
+	    unlock_mutex(&fftw_mutex);
 	    lpc_r2c_plans[myband] = NULL;
 	}
 	if (lpc_r2c_input_buffers[myband] != NULL)
@@ -2245,17 +2120,13 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
     }
     if (lpc_r2c_plans[myband] == NULL)
     {
-#if HAVE_LIBPTHREAD == 1
-	pthread_mutex_lock(&fftw_mutex);
-#endif
+	lock_mutex(&fftw_mutex);
 	lpc_r2c_plans[myband] = fftw_plan_dft_r2c_1d(
 		lpc_r2c_plan_sizes[myband],
 		lpc_r2c_input_buffers[myband],
 		lpc_r2c_output_buffers[myband],
 		FFTW_ESTIMATE);
-#if HAVE_LIBPTHREAD == 1
-	pthread_mutex_unlock(&fftw_mutex);
-#endif
+	unlock_mutex(&fftw_mutex);
     }
     fftw_execute(lpc_r2c_plans[myband]);
 
@@ -2273,13 +2144,13 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 
     float *X = (float *)MALLOC(envframes * wlen * sizeof(float));
     float *Pn = (float *)MALLOC(wlen * sizeof(float));
-    pthread_mutex_lock(&fftw_mutex);
+    lock_mutex(&fftw_mutex);
     if (Pn_buf == NULL)
     {
 	Pn_buf = (float*) MALLOC(nbands * wlen * sizeof(float));
 	Pn_buf_valid = 0;
     }
-    pthread_mutex_unlock(&fftw_mutex);
+    unlock_mutex(&fftw_mutex);
     for (int i = 0; i < wlen; i++) {
 	if (Nindices == 0)
 	{
@@ -2368,13 +2239,9 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 	lpc_c2r_plan_sizes[myband] = N;
 	if (lpc_c2r_plans[myband] != NULL)
 	{
-#if HAVE_LIBPTHREAD == 1
-	    pthread_mutex_lock(&fftw_mutex);
-#endif
+	    lock_mutex(&fftw_mutex);
 	    fftw_destroy_plan(lpc_c2r_plans[myband]);
-#if HAVE_LIBPTHREAD == 1
-	    pthread_mutex_unlock(&fftw_mutex);
-#endif
+	    unlock_mutex(&fftw_mutex);
 	    lpc_c2r_plans[myband] = NULL;
 	}
 	if (lpc_c2r_input_buffers[myband] != NULL)
@@ -2412,17 +2279,13 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 
     if (lpc_c2r_plans[myband] == NULL)
     {
-#if HAVE_LIBPTHREAD == 1
-	pthread_mutex_lock(&fftw_mutex);
-#endif
+	lock_mutex(&fftw_mutex);
 	lpc_c2r_plans[myband] = fftw_plan_dft_c2r_1d(
 		lpc_c2r_plan_sizes[myband],
 		lpc_c2r_input_buffers[myband],
 		lpc_c2r_output_buffers[myband],
 		FFTW_ESTIMATE);
-#if HAVE_LIBPTHREAD == 1
-	pthread_mutex_unlock(&fftw_mutex);
-#endif
+	unlock_mutex(&fftw_mutex);
     }
     fftw_execute(lpc_c2r_plans[myband]);
 
@@ -2452,7 +2315,7 @@ void* lpc_pthread_wrapper(void* arg)
     {
 	lpc(info->y, info->len, info->order, info->compression, info->poles, info->band);
     }
-    pthread_cond_signal(&tpool_cond);
+//    pthread_cond_signal(&tpool_cond);
     return NULL;
 }
 
@@ -2612,13 +2475,9 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
     {
 	if (dct_plan != NULL)
 	{
-#if HAVE_LIBPTHREAD == 1
-	    pthread_mutex_lock(&fftw_mutex);
-#endif
+	    lock_mutex(&fftw_mutex);
 	    fftw_destroy_plan(dct_plan);
-#if HAVE_LIBPTHREAD == 1
-	    pthread_mutex_unlock(&fftw_mutex);
-#endif
+	    unlock_mutex(&fftw_mutex);
 	    dct_plan = NULL;
 	}
 	if (dct_buffer != NULL)
@@ -2628,13 +2487,9 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 	}
 	dct_plan_size = N;
 	dct_buffer = (double *) MALLOC(dct_plan_size * sizeof(double));
-#if HAVE_LIBPTHREAD == 1
-	pthread_mutex_lock(&fftw_mutex);
-#endif
+	lock_mutex(&fftw_mutex);
 	dct_plan = fftw_plan_r2r_1d(dct_plan_size, dct_buffer, dct_buffer, FFTW_REDFT10, FFTW_ESTIMATE);
-#if HAVE_LIBPTHREAD == 1
-	pthread_mutex_unlock(&fftw_mutex);
-#endif
+	unlock_mutex(&fftw_mutex);
     }
 
     for ( int n = 0; n < N; n++ )
@@ -2883,13 +2738,9 @@ float * fdlpenv( float *p, int Np, int N, int myband )
 	fdlpenv_plan_sizes[myband] = nfft;
 	if (fdlpenv_plans[myband] != NULL)
 	{
-#if HAVE_LIBPTHREAD == 1
-	    pthread_mutex_lock(&fftw_mutex);
-#endif
+	    lock_mutex(&fftw_mutex);
 	    fftw_destroy_plan(fdlpenv_plans[myband]);
-#if HAVE_LIBPTHREAD == 1
-	    pthread_mutex_unlock(&fftw_mutex);
-#endif
+	    unlock_mutex(&fftw_mutex);
 	    fdlpenv_plans[myband] = NULL;
 	}
 	if (fdlpenv_input_buffers[myband] != NULL)
@@ -2927,17 +2778,13 @@ float * fdlpenv( float *p, int Np, int N, int myband )
 
     if (fdlpenv_plans[myband] == NULL)
     {
-#if HAVE_LIBPTHREAD == 1
-	pthread_mutex_lock(&fftw_mutex);
-#endif
+	lock_mutex(&fftw_mutex);
 	fdlpenv_plans[myband] = fftw_plan_dft_r2c_1d(
 		fdlpenv_plan_sizes[myband],
 		fdlpenv_input_buffers[myband],
 		fdlpenv_output_buffers[myband],
 		FFTW_ESTIMATE);
-#if HAVE_LIBPTHREAD == 1
-	pthread_mutex_unlock(&fftw_mutex);
-#endif
+	unlock_mutex(&fftw_mutex);
     }
     fftw_execute(fdlpenv_plans[myband]);
 
@@ -2960,13 +2807,9 @@ float * fdlpenv_mod( float *p, int Np, int N, int myband )
 	fdlpenv_plan_sizes[myband] = nfft;
 	if (fdlpenv_plans[myband] != NULL)
 	{
-#if HAVE_LIBPTHREAD == 1
-	    pthread_mutex_lock(&fftw_mutex);
-#endif
+	    lock_mutex(&fftw_mutex);
 	    fftw_destroy_plan(fdlpenv_plans[myband]);
-#if HAVE_LIBPTHREAD == 1
-	    pthread_mutex_unlock(&fftw_mutex);
-#endif
+	    unlock_mutex(&fftw_mutex);
 	    fdlpenv_plans[myband] = NULL;
 	}
 	if (fdlpenv_input_buffers[myband] != NULL)
@@ -3003,17 +2846,13 @@ float * fdlpenv_mod( float *p, int Np, int N, int myband )
     }
     if (fdlpenv_plans[myband] == NULL)
     {
-#if HAVE_LIBPTHREAD == 1
-	pthread_mutex_lock(&fftw_mutex);
-#endif
+	lock_mutex(&fftw_mutex);
 	fdlpenv_plans[myband] = fftw_plan_dft_r2c_1d(
 		fdlpenv_plan_sizes[myband],
 		fdlpenv_input_buffers[myband],
 		fdlpenv_output_buffers[myband],
 		FFTW_ESTIMATE);
-#if HAVE_LIBPTHREAD == 1
-	pthread_mutex_unlock(&fftw_mutex);
-#endif
+	unlock_mutex(&fftw_mutex);
     }
     fftw_execute(fdlpenv_plans[myband]);
 
@@ -3055,9 +2894,7 @@ float * fdlpenv_mod( float *p, int Np, int N, int myband )
 void spec2cep(float * frames, int fdlpwin, int nframes, int ncep, int nbands, int band, int offset, float *feats, int log_flag) 
 {
 
-#if HAVE_LIBPTHREAD == 1
-    pthread_mutex_lock(&fftw_mutex);
-#endif
+    lock_mutex(&fftw_mutex);
     if ( dctm == NULL )
     {
 	dctm = (float *) MALLOC(fdlpwin*ncep*sizeof(float));
@@ -3074,9 +2911,7 @@ void spec2cep(float * frames, int fdlpwin, int nframes, int ncep, int nbands, in
 	    }
 	}
     }
-#if HAVE_LIBPTHREAD == 1
-    pthread_mutex_unlock(&fftw_mutex);
-#endif
+    unlock_mutex(&fftw_mutex);
 
     int dimmult = longterm_do_static + longterm_do_dynamic;
     for ( int f = 0; f < nframes; f++ )
@@ -3245,10 +3080,6 @@ void spec2cep4energy(float * frames, int fdlpwin, int nframes, int ncep, float *
 		{
 		    //feat[i] += (0.33*icsi_log(frame[j],LOOKUP_TABLE,nbits_log))*dctm[i*fdlpwin+j]; //Cubic root compression and log
 		    feat[i] += (0.33*log(frame[j]))*dctm[i*fdlpwin+j]; //Cubic root compression and log
-		    if (isnan(feat[i])) {
-			fprintf(stderr, "nan at spec2cep4energy with f=%d, i=%d, j=%d after adding 0.33*log(frame[j]=%g)*dctm[i*fdlpwin=%d+j]=%g\n",
-				f, i, j, frame[j], fdlpwin, dctm[i*fdlpwin+j]);
-		    }
 		}
 	    }
 	    if (lift_coeff > 0.0)
@@ -3630,13 +3461,9 @@ void* fdlpenv_pthread_wrapper(void* arg)
 		env_pad2[n] /= maxenv;
 	    }      
 
-#if HAVE_LIBPTHREAD == 1
-	    pthread_mutex_lock(&adapt_mutex);
-#endif
+	    lock_mutex(&adapt_mutex);
 	    adapt_m(env_pad2,Npad2,Fs1,env_adpt);
-#if HAVE_LIBPTHREAD == 1
-	    pthread_mutex_unlock(&adapt_mutex);
-#endif
+	    unlock_mutex(&adapt_mutex);
 
 	    for ( int n = 0; n < Npad1; n++ )
 	    {
@@ -3669,9 +3496,6 @@ void* fdlpenv_pthread_wrapper(void* arg)
 	FREE(env_adpt);
     }
     *(info->nframes) = nframes;
-#if HAVE_LIBPTHREAD == 1
-    pthread_cond_signal(&tpool_cond);
-#endif
     return NULL;
 }
 
@@ -3815,12 +3639,6 @@ int main(int argc, char **argv)
 { 
     parse_args(argc, argv);
 
-#if HAVE_LIBPTHREAD == 1
-    pthread_mutex_init(&fftw_mutex, NULL);
-    pthread_mutex_init(&tpool_mutex, NULL);
-    pthread_cond_init(&tpool_cond, NULL);
-#endif
-
     LOOKUP_TABLE = (float*) MALLOC(((int) pow(2,nbits_log))*sizeof(float));
     fill_icsi_log_table(nbits_log,LOOKUP_TABLE); 
 
@@ -3854,7 +3672,7 @@ int main(int argc, char **argv)
     float* energies = NULL;
     if (use_energy)
     {
-	energies = log_energies(signal, Nsignal, Fs, energy_normalize, energy_silence_floor, energy_scale);
+	energies = log_energies(&signal, &N, Fs, energy_normalize, energy_silence_floor, energy_scale);
     }
 
     int fdlpwin = (int)(fdplp_win_len_sec * FDLPWIN_SEC2SHORTTERMMULT_FACTOR * fwin);
@@ -3947,6 +3765,9 @@ int main(int argc, char **argv)
 	    stop_before = 1;
 	    xwin = signal + (Nsignal - local_size);
 	}
+
+	int nfeatfr = (int)floor((local_size - fwin)/fstep)+1;
+
 	memcpy(current_frame + padwin_samples, xwin, local_size * sizeof(short));
 	for (int i = 0; i < padwin_samples; i++) {
 	    current_frame[padwin_samples - i - 1] = current_frame[padwin_samples + i];
@@ -3957,8 +3778,6 @@ int main(int argc, char **argv)
 	sdither( current_frame, local_size, 1 );
 	sub_mean( current_frame, local_size );
 	pre_emphasize(current_frame, local_size, preem_coeff);
-
-	int nfeatfr = (int)floor((local_size - fwin)/fstep)+1;
 
 	if (feats == NULL)
 	{
@@ -4028,10 +3847,8 @@ int main(int argc, char **argv)
 	FREE(energies);
     }
 #if HAVE_LIBPTHREAD == 1
-    pthread_mutex_destroy(&fftw_mutex);
-    pthread_mutex_destroy(&tpool_mutex);
-    pthread_mutex_destroy(&adapt_mutex);
-    pthread_cond_destroy(&tpool_cond);
+    destroy_mutex(&fftw_mutex);
+    destroy_mutex(&adapt_mutex);
 #else
     int mc = get_malloc_count();
     if (mc > 0)
