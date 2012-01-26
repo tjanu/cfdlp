@@ -989,11 +989,6 @@ void levinson(int p, double *phi, float *poles)
 	    alpha[i*(p+1)+j] = alpha[(i-1)*(p+1)+j] + k[i]*alpha[(i-1)*(p+1)+i-j];
 	}
 	E[i] = (1-k[i]*k[i])*E[i-1];
-//	if (E[i] < 0.) {
-//	    fprintf(stderr, "E[%d]=%g, k[%d]=%g, k[i]^2=%g, E[%d-1]=%g\n",
-//		    i, E[i], i, k[i], k[i]*k[i], i, E[i-1]);
-//	    fatal("E[i] negative -> something must be wrong with the data.");
-//	}
     }
 
     // Copy final iteration coeffs to output array
@@ -1370,7 +1365,6 @@ void* lpc_pthread_wrapper(void* arg)
     {
 	lpc(info->y, info->len, info->order, info->compression, info->poles, info->band);
     }
-//    pthread_cond_signal(&tpool_cond);
     return NULL;
 }
 
@@ -1423,7 +1417,6 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
 	for (int i = 0; i < Ncopy; i++) {
 	    copy[i] = x[i];
 	}
-//	memcpy(copy, x, sizeof(float) * N);
     }
     else
     {
@@ -2651,6 +2644,7 @@ void compute_fdlp_feats( short *x, int N, int Fs, int* nceps, float **feats, int
 	    fatal("one of the threads got a different number of feature frames?!");
 	}
     }
+    FREE(nframesarray);
 
     if (do_spec)
     {
