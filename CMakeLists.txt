@@ -1,4 +1,4 @@
-project(cfdlp C)
+project(cfdlp C CXX)
 
 cmake_minimum_required(VERSION 2.8)
 
@@ -11,6 +11,7 @@ set(srcs
     adapt_m.c
     windowing.c
     filterbanks.c
+    hlpc_ls.cpp
     )
 set(libs)
 
@@ -45,6 +46,8 @@ else()
     link_directories(${CMAKE_BINARY_DIR}/lib)
     set(libs ${libs} fftw3)
 endif()
+
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 add_executable(cfdlp ${srcs})
 target_link_libraries(cfdlp ${libs})

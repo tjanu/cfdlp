@@ -17,6 +17,7 @@
 #include "adapt.h"
 #include "windowing.h"
 #include "filterbanks.h"
+#include "hlpc_ls.h"
 
 #if HAVE_LIBPTHREAD == 1
 #include "threadpool.h"
@@ -63,7 +64,7 @@ float energy_silence_floor = 50.0;
 int limit_range = 0;
 float limit_lower = 125.0;
 float limit_upper = 3800.0;
-int do_wiener = 0;
+int lpc_type = 0;
 float wiener_alpha = -1;
 int truncate_last = 0;
 
@@ -360,6 +361,7 @@ void usage()
 	    " -pole-factor <float>\tThe model order calculated as a length in samples divided by an axis-dependend factor that can be given here (bark:fdplpwin/200, mel:fdplpwin/100, linear-*:filter-len/6)\n"
 	    " -skip-bands <int n>\tWhether or not to skip the first n bands when computing the features (useful value for telephone data: 2) (0)\n"
 	    " -padding <float>\tSymmetrically pad the FDLP analysis window by <float> ms on each side. <float> <= 0.0 means no padding, 32ms was found to be useful. Helps with resolution deficencies at the boundaries. (0.0)\n"
+	    " -ls-lpc <flag>\tUse a least square estimator instead of levinson-durbin recursion to find the lpc coefficients (0)\n"
 	    " -feat <flag>\t\tFeature type to generate. (0)\n"
 	    "\t\t\t\t0: Long-term modulation features\n"
 	    "\t\t\t\t1: Short-term spectral features\n"
@@ -510,7 +512,10 @@ void parse_param(char* name, char* value)
     }
     else if ( strcmp(name, "apply-wiener") == 0 )
     {
-	do_wiener = str_to_int(value, "apply-wiener");
+	int do_wiener = str_to_int(value, "apply-wiener");
+	if (do_wiener) {
+	    lpc_type = 1;
+	}
     }
     else if ( strcmp(name, "wiener-alpha") == 0 )
     {
@@ -531,6 +536,13 @@ void parse_param(char* name, char* value)
     else if ( strcmp(name, "padding") == 0 )
     {
 	padwin_ms = str_to_float(value, "padding");
+    }
+    else if ( strcmp(name, "ls-lpc") == 0 )
+    {
+	int do_ls_lpc = str_to_int(value, "ls-lpc");
+	if (do_ls_lpc) {
+	    lpc_type = 2;
+	}
     }
     else if ( strcmp(name, "speechchar") == 0)
     {
@@ -1357,13 +1369,20 @@ void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int 
 void* lpc_pthread_wrapper(void* arg)
 {
     struct lpc_info* info = (struct lpc_info*)arg;
-    if (do_wiener)
+    switch (lpc_type)
     {
-	hlpc_wiener(info->y, info->len, info->order, info->poles, info->orig_len, info->vadindices, info->Nindices, info->band);
-    }
-    else
-    {
-	lpc(info->y, info->len, info->order, info->compression, info->poles, info->band);
+	case 0:
+	    lpc(info->y, info->len, info->order, info->compression, info->poles, info->band);
+	    break;
+	case 1:
+	    hlpc_wiener(info->y, info->len, info->order, info->poles, info->orig_len, info->vadindices, info->Nindices, info->band);
+	    break;
+	case 2:
+	    hlpc_ls(info->y, info->len, info->order, info->compression, info->poles);
+	    break;
+	default:
+	    fprintf(stderr, "Unknown lpc type!\n");
+	    exit(EXIT_FAILURE);
     }
     return NULL;
 }
@@ -1508,7 +1527,7 @@ float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 {
     int NNIS = 0;
     int* NIS = NULL;
-    if (do_wiener)
+    if (lpc_type)
     {
 	if (have_vadfile)
 	{
@@ -2698,7 +2717,7 @@ int main(int argc, char **argv)
     fprintf(stderr, "Input file = %s; N = %d samples\n", infile, N);
     fprintf(stderr, "Gain Norm %d \n",do_gain_norm);
     fprintf(stderr, "Limit DCT range: %d\n", limit_range);
-    fprintf(stderr, "Apply wiener filter: %d (alpha=%g)\n", do_wiener, wiener_alpha);
+    fprintf(stderr, "LPC type (normal=0, wiener, ls): %d (wiener_alpha=%g)\n", lpc_type, wiener_alpha);
 
     fprintf(stderr, "Feature type: %s\n", (do_spec ? (specgrm ? "spectrogram" : (do_plp2 ? "PLP^2" : "spectral")) : "modulation"));
     fprintf(stderr, "FDPLP window length: %gs\n", fdplp_win_len_sec);
