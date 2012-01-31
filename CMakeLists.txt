@@ -12,6 +12,7 @@ set(srcs
     windowing.c
     filterbanks.c
     hlpc_ls.cpp
+    stopwatch.cpp
     )
 set(libs)
 

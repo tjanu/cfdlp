@@ -1,6 +1,8 @@
 #ifndef HLPC_LS_H
 #define HLPC_LS_H
 
+#define HLPC_DO_TIMING 0
+
 #ifdef __cplusplus
 extern "C" {
 #endif

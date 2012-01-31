@@ -337,7 +337,7 @@ void pre_emphasize(short *x, int N, float coeff)
     }
     if (coeff > 0.0)
     { // actually do something
-	for (int i = 1; i < N; i++) { // 1 --> cannot pre-emphasize first sample
+	for (int i = N-1; i > 0; i--) { // >0 --> cannot pre-emphasize first sample
 	    x[i] = x[i] - coeff * x[i-1];
 	}
     }

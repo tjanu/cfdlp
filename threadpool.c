@@ -29,7 +29,12 @@ void run_threads(struct thread_info* threads, int numthreads)
     struct timespec ts;
     while (i < numthreads)
     {
-	if (max_num_threads < 0 || curr_num_threads < max_num_threads)
+	if (max_num_threads == 0) // just do them all sequentially in this thread here
+	{
+	    run_function(&(threads[i]));
+	    i++;
+	}
+	else if (max_num_threads < 0 || curr_num_threads < max_num_threads)
 	{
 	    pthread_create(&threads[i].thread_id, NULL, run_function, &(threads[i]));
 	    struct running_thread* new_runner = (struct running_thread*) MALLOC(sizeof(struct running_thread));
