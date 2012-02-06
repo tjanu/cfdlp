@@ -5,8 +5,22 @@
  * of fft points
  * 1 --> computing fdlpenv the slow way (rounding number of fft points to next
  * power of 2, interpolating for final envelope
+ * the #ifndef makes sure you can also set this in your build system,
+ * alternatively (compile with -DFDLPENV_WITH_INTERP={0,1})
  */
+#ifndef FDLPENV_WITH_INTERP
 #define FDLPENV_WITH_INTERP 0
+#endif
+/* 0 --> not even adding the option to calculate the LPC using least squares
+ * (slow as hell)
+ * 1 --> add that option in [this is implemented in C++ -> take care when
+ * adjusting the build system]
+ * the #ifndef makes sure you can also set this in your build system (compile
+ * with -DWITH_LPC_LS_SUPPORT=1, for example)
+ */
+#ifndef WITH_LPC_LS_SUPPORT
+#define WITH_LPC_LS_SUPPORT 0
+#endif
 
 #define AXIS_BARK 0
 #define AXIS_MEL 1

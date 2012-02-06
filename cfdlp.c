@@ -17,7 +17,9 @@
 #include "adapt.h"
 #include "windowing.h"
 #include "filterbanks.h"
+#if WITH_HLPC_LS_SUPPORT == 1
 #include "hlpc_ls.h"
+#endif
 
 #if HAVE_LIBPTHREAD == 1
 #include "threadpool.h"
@@ -25,6 +27,7 @@
 #include "singlethread.h"
 #endif
 
+// all those global variables... :-/
 char *infile = NULL;
 char *outfile = NULL;
 char *printfile = NULL;
@@ -117,6 +120,8 @@ struct thread_info* band_threads = NULL;
 cfdlp_mutex_t fftw_mutex  = CFDLP_MUTEX_INITIALIZER;
 cfdlp_mutex_t adapt_mutex = CFDLP_MUTEX_INITIALIZER;
 
+// struct containing all info needed to do the lpc computation on a single band,
+// so this can be prepared for all threads which are then executed
 struct lpc_info {
     double* y;
     int len;
@@ -129,6 +134,7 @@ struct lpc_info {
     int band;
 };
 
+// same as struct lpc_info for envelope computation
 struct fdlpenv_info {
     float* poles;
     int Np;
@@ -322,8 +328,6 @@ void cleanup_fftw_plans()
     cleanup_fdlpenv_plans();
 }
 
-void usage();
-
 void usage()
 {
     fatal("\nFDLP Feature Extraction software\n"
@@ -361,7 +365,9 @@ void usage()
 	    " -pole-factor <float>\tThe model order calculated as a length in samples divided by an axis-dependend factor that can be given here (bark:fdplpwin/200, mel:fdplpwin/100, linear-*:filter-len/6)\n"
 	    " -skip-bands <int n>\tWhether or not to skip the first n bands when computing the features (useful value for telephone data: 2) (0)\n"
 	    " -padding <float>\tSymmetrically pad the FDLP analysis window by <float> ms on each side. <float> <= 0.0 means no padding, 32ms was found to be useful. Helps with resolution deficencies at the boundaries. (0.0)\n"
+#if WITH_HLPC_LS_SUPPORT == 1
 	    " -ls-lpc <flag>\tUse a least square estimator instead of levinson-durbin recursion to find the lpc coefficients (0)\n"
+#endif
 	    " -feat <flag>\t\tFeature type to generate. (0)\n"
 	    "\t\t\t\t0: Long-term modulation features\n"
 	    "\t\t\t\t1: Short-term spectral features\n"
@@ -405,6 +411,9 @@ void usage()
 #endif
 	    );
 }
+
+// option parameter parsing taken out of parse_args so it can be reused in
+// parse_conffile (only one place to modify when adding a new option
 
 void parse_param(char* name, char* value)
 {
@@ -537,6 +546,7 @@ void parse_param(char* name, char* value)
     {
 	padwin_ms = str_to_float(value, "padding");
     }
+#if WITH_HLPC_LS_SUPPORT
     else if ( strcmp(name, "ls-lpc") == 0 )
     {
 	int do_ls_lpc = str_to_int(value, "ls-lpc");
@@ -544,6 +554,7 @@ void parse_param(char* name, char* value)
 	    lpc_type = 2;
 	}
     }
+#endif
     else if ( strcmp(name, "speechchar") == 0)
     {
 	speechchar = value[0];
@@ -658,7 +669,7 @@ void parse_conffile(const char* filename)
     {
 	linecount++;
 	int linelen = strlen(linebuf);
-	//fprintf(stderr, "Line %d, len %d: <%s>\n", linecount, linelen, linebuf);
+	//clean up whitespace from the right hand side
 	for (int i = linelen - 1; i >= 0; i--)
 	{
 	    if (linebuf[i] == ' ' || linebuf[i] == '\n' || linebuf[i] == '\r' || linebuf[i] == '\t')
@@ -671,7 +682,8 @@ void parse_conffile(const char* filename)
 	    }
 	}
 	linelen = strlen(linebuf);
-	//fprintf(stderr, "Cleaned up from right: len %d, str <%s>\n", linelen, linebuf);
+	// clean up whitespace from the left hand side by resetting the pointer
+	// to the first none-whitespace character
 	int wscnt = 0;
 	for (int i = 0; i < linelen; i++)
 	{
@@ -686,11 +698,12 @@ void parse_conffile(const char* filename)
 	}
 	linebuf = linebuf + wscnt;
 	linelen = strlen(linebuf);
-	//fprintf(stderr, "Cleaned up from left: len %d, str <%s>\n", linelen, linebuf);
+	// check if it's a comment line
 	if (linelen <= 0 || linebuf[0] == '#')
 	{
 	    continue;
 	}
+	// clean up any possible trailing comments on that line
 	char *name = linebuf;
 	char *value = NULL;
 	int eqpos = -1;
@@ -715,7 +728,8 @@ void parse_conffile(const char* filename)
 		break;
 	    }
 	}
-	//fprintf(stderr, "Cleaned up comments in line: len %d, str <%s>\n", linelen, linebuf);
+	// split line at '=', cleaning up whitespace on both sides of '='. put
+	// left hand side in "name", right hand side in "value"
 	for (int i = 0; i < linelen; i++)
 	{
 	    if (linebuf[i] == '=')
@@ -776,6 +790,7 @@ void parse_args(int argc, char **argv)
 {
     for ( int i = 1; i < argc; i++ )
     {
+	// options not allowed in the config file
 	if ( strcmp(argv[i], "-h") == 0
 		|| strcmp(argv[i], "--help") == 0
 		|| strcmp(argv[i], "-help") == 0)
@@ -860,6 +875,7 @@ void parse_args(int argc, char **argv)
 		usage();
 	    }
 	}
+	// all other options
 	else
 	{
 	    if (i < argc - 1)
@@ -875,7 +891,8 @@ void parse_args(int argc, char **argv)
 	}
     }
 
-    // Checking of some parameters/boundaries
+    // Checking of some parameters/boundaries - only needs to be done here since
+    // parse_conffile can only be called from here.
     
     // we need an input and some sort of output file
     if ( !infile || !(outfile || printfile) )
@@ -977,6 +994,8 @@ void parse_args(int argc, char **argv)
     }
 }
 
+// levinson-durbin recursion outputting poles. also does gain normalization if
+// requested
 void levinson(int p, double *phi, float *poles)
 {
     double *alpha = (double *) MALLOC((p+1)*(p+1)*sizeof(double));
@@ -1028,6 +1047,7 @@ void levinson(int p, double *phi, float *poles)
     FREE(alpha);
 }
 
+// "standard" lpc using autocorrelation + levinson-durbin
 void lpc( double *y, int len, int order, int compr, float *poles, int myband ) 
 {
     // Compute autocorrelation vector or matrix
@@ -1132,6 +1152,9 @@ void lpc( double *y, int len, int order, int compr, float *poles, int myband )
     levinson(order, lpc_c2r_output_buffers[myband], poles);
 }
 
+// wiener-filtering lpc computation, also using autocorrelation +
+// levinson-durbin with additional filtering during the autocorrelation
+// computation
 void hlpc_wiener(double *y, int len, int order, float *poles, int orig_len, int *vadindices, int Nindices, int myband)
 {
     int wlen = round(DEFAULT_SHORTTERM_WINLEN_MS* Fs);
@@ -1377,9 +1400,11 @@ void* lpc_pthread_wrapper(void* arg)
 	case 1:
 	    hlpc_wiener(info->y, info->len, info->order, info->poles, info->orig_len, info->vadindices, info->Nindices, info->band);
 	    break;
+#if WITH_HLPC_LS_SUPPORT
 	case 2:
 	    hlpc_ls(info->y, info->len, info->order, info->compression, info->poles);
 	    break;
+#endif
 	default:
 	    fprintf(stderr, "Unknown lpc type!\n");
 	    exit(EXIT_FAILURE);
@@ -1387,6 +1412,7 @@ void* lpc_pthread_wrapper(void* arg)
     return NULL;
 }
 
+// read in VAD info from a previously read in VAD file.
 int *read_VAD(int N, int Fs, int* Nindices)
 {
     int flen = DEFAULT_SHORTTERM_WINLEN_MS * Fs;
@@ -1407,6 +1433,7 @@ int *read_VAD(int N, int Fs, int* Nindices)
     return indices;
 }
 
+// on the fly, energy based VAD computation
 int *check_VAD(short *x, int N, int Fs, int *Nindices)
 {
     int NB_FRAME_THRESHOLD_LTE = 10;
@@ -1523,11 +1550,12 @@ int *check_VAD(short *x, int N, int Fs, int *Nindices)
     return indices;
 }
 
+// same as matlab
 float * fdlpfit_full_sig(short *x, int N, int Fs, int *Np)
 {
     int NNIS = 0;
     int* NIS = NULL;
-    if (lpc_type)
+    if (lpc_type == 1) /* only if we're doing wiener filtering */
     {
 	if (have_vadfile)
 	{
@@ -2717,7 +2745,11 @@ int main(int argc, char **argv)
     fprintf(stderr, "Input file = %s; N = %d samples\n", infile, N);
     fprintf(stderr, "Gain Norm %d \n",do_gain_norm);
     fprintf(stderr, "Limit DCT range: %d\n", limit_range);
+#if WITH_LPC_LS_SUPPORT == 1
     fprintf(stderr, "LPC type (normal=0, wiener, ls): %d (wiener_alpha=%g)\n", lpc_type, wiener_alpha);
+#else
+    fprintf(stderr, "LPC type (normal=0, wiener): %d (wiener_alpha=%g)\n", lpc_type, wiener_alpha);
+#endif
 
     fprintf(stderr, "Feature type: %s\n", (do_spec ? (specgrm ? "spectrogram" : (do_plp2 ? "PLP^2" : "spectral")) : "modulation"));
     fprintf(stderr, "FDPLP window length: %gs\n", fdplp_win_len_sec);
@@ -2917,7 +2949,9 @@ int main(int argc, char **argv)
 #if HAVE_LIBPTHREAD == 1
     destroy_mutex(&fftw_mutex);
     destroy_mutex(&adapt_mutex);
-#else
+#else // if we are doing multithreading, these counts won't be accurate
+    // (race conditions, and such a simple test is really not worth it
+    // to slow the whole thing down by synchronizing the counting via mutexes)
     int mc = get_malloc_count();
     if (mc > 0)
 	fprintf(stderr,"WARNING: %d malloc'd items not free'd\n", mc);
