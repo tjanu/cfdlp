@@ -1,6 +1,8 @@
 #ifndef SINGLETHREAD_H
 #define SINGLETHREAD_H
 
+#include <stdio.h>
+
 struct thread_info {
     void* (*threadfunc)(void* arg);
     void* thread_arg;
@@ -8,9 +10,9 @@ struct thread_info {
 
 #define cfdlp_mutex_t int
 #define CFDLP_MUTEX_INITIALIZER 0
-void lock_mutex(cfdlp_mutex_t* mutex) {}
-void unlock_mutex(cfdlp_mutex_t* mutex) {}
-void destroy_mutex(cfdlp_mutex_t* mutex) {}
+#define lock_mutex(x)
+#define unlock_mutex(x)
+#define destroy_mutex(x)
 
 extern int max_num_threads;
 
